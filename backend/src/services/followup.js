@@ -1,41 +1,41 @@
 // ============================================================
 // MOTOR DE SEGUIMIENTO 24H (requisito explícito del dueño).
 //
-// Regla del negocio: "si un paciente preguntó y nadie le respondió,
+// Regla del negocio: "si un cliente preguntó y nadie le respondió,
 // el bot debe ser insistente: si no contestan, esperar 24 horas y
 // volver a preguntar u ofrecer los servicios".
 //
 // Cómo funciona:
-//  1. Cada vez que el bot responde automáticamente (o el paciente escribe
+//  1. Cada vez que el bot responde automáticamente (o el cliente escribe
 //     y no hay humano activo), se programa un seguimiento para dentro de
 //     FOLLOWUP_DELAY_HOURS (default 24h).
-//  2. Si el paciente escribe de nuevo, el temporizador se reinicia.
+//  2. Si el cliente escribe de nuevo, el temporizador se reinicia.
 //  3. Si un ESPECIALISTA responde, el seguimiento se cancela (ya hay humano).
 //  4. Un cron externo (cron-job.org, Vercel Cron, etc.) llama cada hora a
 //     GET /api/cron/followup y este módulo envía los vencidos.
-//  5. Si tras MAX_FOLLOWUP_ATTEMPTS intentos el paciente no responde,
+//  5. Si tras MAX_FOLLOWUP_ATTEMPTS intentos el cliente no responde,
 //     se marca la conversación como needsHuman para que un humano la tome.
 //
 // Todo persiste en db.json: si el servidor se reinicia, los
 // seguimientos programados NO se pierden.
 // ============================================================
-const { CLINICA, cfg } = require('../config');
+const { NEGOCIO, cfg } = require('../config');
 const { sendText } = require('./send');
 const db = require('../db');
 
 function textoSeguimiento(nombre, topic, intento) {
   const n = nombre ? ` ${nombre}` : '';
-  const C = CLINICA;
+  const C = NEGOCIO;
   if (intento <= 1) {
     return (
-      `Hola${n} 💙💚, le escribe de nuevo *${C.nombre}*.\n` +
+      `Hola${n} 🏗️, le escribe de nuevo *${C.nombre}*.\n` +
       `Ayer nos escribió sobre *${topic}* y no queremos dejarle sin respuesta 🙏.\n` +
-      `¿Le podemos ayudar en algo? Estamos para servirle: ${C.whatsapp}.`
+      `¿Seguimos con eso? Escríbanos por aquí o llámenos al ${C.whatsapp}.`
     );
   }
   return (
-    `Hola${n} 💙💚, pasamos de nuevo por aquí porque nos importa atenderle bien 🙏.\n` +
-    `Si necesita información de nuestros servicios, horarios o agendar una cita, ` +
+    `Hola${n} 🏗️, pasamos de nuevo por aquí porque nos importa atenderle bien 🙏.\n` +
+    `Si necesita una cotización de concreto por yarda o programar una entrega, ` +
     `con gusto le ayudamos. ¡Que tenga bonito día!\n` +
     `*${C.nombre}* — ${C.whatsapp}`
   );

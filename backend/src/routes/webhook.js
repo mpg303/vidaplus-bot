@@ -143,7 +143,7 @@ async function procesarMensajeEntrante(msg, nombrePerfil) {
     return;
   }
 
-  // Si el paciente pide humano, se marca para que un especialista lo tome.
+  // Si el cliente pide humano, se marca para que un especialista lo tome.
   if (decision.intent === 'humano' || decision.intent === 'emergencia') {
     db.setNeedsHuman(conv.id, true);
   }
@@ -176,7 +176,7 @@ async function procesarMensajeEntrante(msg, nombrePerfil) {
   }
 
   // 4. Programar el seguimiento 24h (insistencia si no contestan).
-  //    Se cancela/reinicia solo con cada mensaje nuevo del paciente.
+  //    Se cancela/reinicia solo con cada mensaje nuevo del cliente.
   followup.programar(conv.id, {
     intent: decision.intent,
     topic: decision.topic,

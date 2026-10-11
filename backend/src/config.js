@@ -15,17 +15,16 @@ try {
   /* dotenv no instalado: se usan las variables de entorno del sistema */
 }
 
-// ---- Datos reales de la clínica (una sola fuente de verdad) ----
-const CLINICA = {
-  nombre: 'Clínica Hispana VidaPlus',
-  direccion: '3068 Forest Ln Ste 121, Dallas TX 75234',
-  whatsapp: '(945) 301-6982',
+// ---- Datos reales del negocio (una sola fuente de verdad) ----
+const NEGOCIO = {
+  nombre: 'JMP Concrete and Dispatch LLC',
+  nombreCorto: 'JMP Concrete',
+  whatsapp: '(786) 366-2018',
+  email: 'jmpconcreteanddispatchllc@gmail.com',
+  zona: 'Dallas–Fort Worth, TX y alrededores',
   zonaHoraria: 'America/Chicago',
   // Texto de horario que se usa en las respuestas automáticas.
-  horarioTexto:
-    'lunes a sábado de 9:00 am a 12:00 am y domingos de 10:00 am a 5:00 pm',
-  googleMapsUrl:
-    'https://www.google.com/maps/search/?api=1&query=3068+Forest+Ln+Ste+121+Dallas+TX+75234',
+  horarioTexto: 'lunes a sábado',
 };
 
 const cfg = {
@@ -38,11 +37,6 @@ const cfg = {
   metaAppSecret: process.env.META_APP_SECRET || '', // opcional: verifica firma del webhook
   wabaId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || '',
   graphVersion: process.env.META_GRAPH_VERSION || 'v22.0',
-
-  // --- Encuesta de reseña ---
-  googleReviewUrl:
-    process.env.GOOGLE_REVIEW_URL ||
-    'https://www.google.com/maps/search/?api=1&query=Clinica+Hispana+VidaPlus+Dallas+TX',
 
   // --- Panel (login básico) ---
   panelUser: process.env.PANEL_USER || 'admin',
@@ -61,28 +55,23 @@ const cfg = {
 };
 
 /**
- * ¿Está abierta la clínica ahora? (hora de Chicago)
- * Lun–Sáb 9:00–24:00, Dom 10:00–17:00.
+ * ¿Está el negocio en horario ahora? (hora de Chicago)
+ * Lun–Sáb se considera horario de trabajo; domingo cerrado.
  */
-function clinicaAbiertaAhora(fecha = new Date()) {
+function negocioAbiertoAhora(fecha = new Date()) {
   const partes = new Intl.DateTimeFormat('en-US', {
-    timeZone: CLINICA.zonaHoraria,
+    timeZone: NEGOCIO.zonaHoraria,
     weekday: 'short',
-    hour: 'numeric',
-    hour12: false,
   }).formatToParts(fecha);
-  const get = (t) => partes.find((p) => p.type === t)?.value;
-  const dia = get('weekday'); // Sun, Mon, ...
-  const hora = parseInt(get('hour'), 10) % 24;
-  if (dia === 'Sun') return hora >= 10 && hora < 17;
-  return hora >= 9; // Lun–Sáb: 9:00 am – 12:00 am
+  const dia = partes.find((p) => p.type === 'weekday')?.value; // Sun, Mon, ...
+  return dia !== 'Sun';
 }
 
-/** Aviso corto según si está abierta o cerrada (para agregar a respuestas). */
+/** Aviso corto según si está en horario o no (para agregar a respuestas). */
 function avisoApertura() {
-  return clinicaAbiertaAhora()
-    ? '✅ Ahorita estamos abiertos, ¡le esperamos!'
-    : '🌙 Ahorita estamos cerrados, pero con gusto le atendemos en nuestro horario.';
+  return negocioAbiertoAhora()
+    ? '✅ Ahorita estamos en horario, ¡escríbanos!'
+    : '🌙 Hoy domingo estamos cerrados, pero déjenos su mensaje y le atendemos.';
 }
 
-module.exports = { CLINICA, cfg, clinicaAbiertaAhora, avisoApertura };
+module.exports = { NEGOCIO, cfg, negocioAbiertoAhora, avisoApertura };

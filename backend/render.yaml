@@ -3,9 +3,9 @@
 # o crear un Web Service manual apuntando a la carpeta backend/.
 services:
   - type: web
-    name: vidaplus-whatsapp-api
+    name: jmpconcrete-whatsapp-api
     runtime: node
-    rootDir: proyecto/backend
+    rootDir: backend
     buildCommand: npm install
     startCommand: npm start
     plan: free

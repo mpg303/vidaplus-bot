@@ -134,7 +134,7 @@ async function abrirChat(id) {
   cargarConversaciones();
 }
 
-const ROL_TXT = { CLIENTE: 'Paciente', BOT: 'Bot', ESPECIALISTA: 'Especialista' };
+const ROL_TXT = { CLIENTE: 'Cliente', BOT: 'Bot', ESPECIALISTA: 'Especialista' };
 const ROL_CLS = { CLIENTE: 'cli', BOT: 'bot', ESPECIALISTA: 'esp' };
 
 async function cargarChat(id, silencioso = false) {
@@ -192,7 +192,7 @@ document.getElementById('reply-text').addEventListener('keydown', (e) => {
 // Encuesta de reseña
 document.getElementById('btn-survey').addEventListener('click', async () => {
   if (!convActiva) return;
-  if (!confirm('¿Enviar la encuesta de reseña de Google a este paciente?')) return;
+  if (!confirm('¿Enviar la encuesta de satisfacción a este cliente?')) return;
   try {
     await api(`/api/conversations/${convActiva}/survey`, { method: 'POST', body: '{}' });
     alert('Encuesta enviada ⭐');

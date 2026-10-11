@@ -41,7 +41,7 @@ async function llamarApi(payload) {
 
 /**
  * Envía un mensaje de texto libre.
- * (Solo funciona dentro de la ventana de 24h que abre el paciente,
+ * (Solo funciona dentro de la ventana de 24h que abre el cliente,
  * o como respuesta a un mensaje entrante.)
  */
 async function sendText(to, text) {

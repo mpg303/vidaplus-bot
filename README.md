@@ -1,4 +1,4 @@
-# Bot propio de WhatsApp — Clínica Hispana VidaPlus 💙💚
+# Bot propio de WhatsApp — JMP Concrete and Dispatch LLC 🏗️
 
 Scaffold funcional del bot propio de la clínica, con la **misma base que el bot de Marcel/Axxel**:
 un **panel web tipo inbox** (desplegado en Vercel) + un **backend API REST** (como `api.axxel.solutions`).
@@ -42,7 +42,8 @@ proyecto/
 |---|---|
 | `webhook.js` | Verifica el webhook de Meta (GET) y recibe mensajes/estados (POST). Guarda cada mensaje como **CLIENTE**, decide la respuesta automática y programa el seguimiento 24h. |
 | `send.js` | `sendText()` y `sendTemplate()` → `POST graph.facebook.com/v22.0/<PHONE_NUMBER_ID>/messages` con el token de entorno. |
-| `autoReply.js` | Intents por palabras clave en español: saludo, horario, servicios, precio, cita, ubicación, humano, emergencia, gracias, adiós. Usa los datos reales: *Clínica Hispana VidaPlus, 3068 Forest Ln Ste 121, Dallas TX 75234, (945) 301-6982, lun–sáb 9am–12am, dom 10am–5pm*. Si un humano respondió hace < 30 min o el bot está pausado, no interrumpe. |
+| `autoReply.js` | Intents por palabras clave en español: saludo, cotización, pedido, entrega, pago, horario, zona, humano, gracias, adiós. Usa los datos reales: *JMP Concrete and Dispatch LLC, (786) 366-2018, Dallas–Fort Worth, lun–sáb*. Si un humano respondió hace < 30 min o el bot está pausado, no interrumpe. |
+
 | `survey.js` | Dispara la encuesta post-cita (texto cálido en español + `GOOGLE_REVIEW_URL`). Por texto dentro de la ventana 24h o por plantilla aprobada fuera de ella. |
 | `followup.js` | **Motor de seguimiento 24h (pedido por Jesus):** si el paciente preguntó y nadie le respondió, a las 24h el bot vuelve a escribir (insistente, hasta `MAX_FOLLOWUP_ATTEMPTS` veces); si sigue sin respuesta, marca la conversación `needsHuman` para que la tome un humano. Los timers persisten en `db.json` (sobreviven reinicios). Se ejecuta vía `GET /api/cron/followup` con `CRON_SECRET`. |
 | `campaign.js` | Campañas por **plantillas aprobadas**: crea la campaña, envía en lotes con pausa de 600 ms entre mensajes y guarda por destinatario `pendiente/enviado/error`. El botón **sí funciona** (a diferencia del de Axxel). |
@@ -74,7 +75,7 @@ locales; el envío real a WhatsApp requiere la configuración de Meta (abajo).
    *Web Service* manual con Root Directory `proyecto/backend`, Build `npm install`, Start `npm start`.
 3. En *Environment → Environment Variables* pega todas las variables del `.env.example`.
 4. Activa un **disco persistente** y apunta `DATA_DIR` ahí (ej. `/var/data`), para que `db.json` no se borre.
-5. Anota la URL pública (ej. `https://vidaplus-whatsapp-api.onrender.com`).
+5. Anota la URL pública (ej. `https://jmpconcrete-whatsapp-api.onrender.com`).
 
 > ¿Por qué no el backend en Vercel Functions? El almacenamiento es un JSON local y Vercel
 > serverless tiene disco efímero: los mensajes y seguimientos se perderían. El backend necesita
@@ -84,7 +85,7 @@ locales; el envío real a WhatsApp requiere la configuración de Meta (abajo).
 1. En `panel/config.js` cambia `BACKEND_URL` por la URL pública del backend.
 2. En Vercel: *Add New → Project*, importa el repo y pon **Root Directory** en `proyecto/panel`.
    No hay build: es estático (`vercel.json` incluido).
-3. Obtienes algo como `https://vidaplus-inbox.vercel.app` — el equivalente propio del
+3. Obtienes algo como `https://jmpconcrete-inbox.vercel.app` — el equivalente propio del
    `axxel-inbox-vidaplus.vercel.app`.
 
 **Cron del seguimiento 24h:**

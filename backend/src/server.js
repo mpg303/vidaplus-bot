@@ -38,7 +38,7 @@ app.use('/api', require('./routes/inbox'));
 
 app.get('/', (req, res) => {
   res.json({
-    servicio: 'Clínica Hispana VidaPlus — Bot de WhatsApp (API)',
+    servicio: 'JMP Concrete and Dispatch LLC — Bot de WhatsApp (API)',
     estado: 'en línea',
     hora: new Date().toISOString(),
   });

@@ -84,7 +84,7 @@ router.post('/conversations/:id/pause', (req, res) => {
   res.json({ ok: true, botPaused: conv.botPaused });
 });
 
-// Disparar la encuesta de reseña de Google post-cita.
+// Disparar la encuesta de satisfacción post-entrega.
 router.post('/conversations/:id/survey', async (req, res) => {
   const conv = db.getConversation(req.params.id);
   if (!conv) return res.status(404).json({ error: 'Conversación no encontrada.' });

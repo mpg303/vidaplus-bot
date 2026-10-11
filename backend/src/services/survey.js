@@ -1,29 +1,29 @@
 // ============================================================
-// Encuesta de satisfacción post-cita.
-// Dispara el mensaje que pide la reseña de Google tras la visita.
-// El enlace sale de GOOGLE_REVIEW_URL (configurable, sin hardcodear).
-// Todo el texto al paciente está en español, tono cálido.
+// Encuesta de satisfacción post-entrega.
+// Dispara el mensaje que pregunta cómo le fue al cliente con su
+// entrega de concreto y si necesita más yardas.
+// Todo el texto al cliente está en español, tono cálido.
 // ============================================================
-const { CLINICA, cfg } = require('../config');
+const { NEGOCIO, cfg } = require('../config');
 const { sendText, sendTemplate } = require('./send');
 const db = require('../db');
 
 function textoEncuesta(nombre) {
   const n = nombre ? ` ${nombre}` : '';
   return (
-    `Hola${n} 💙💚\n\n` +
-    `Gracias por su visita a *${CLINICA.nombre}*. Nos encantaría saber cómo le fue 🙏.\n\n` +
-    `¿Nos regala un minutito dejándonos su reseña en Google? Su opinión nos ayuda muchísimo:\n` +
-    `${cfg.googleReviewUrl}\n\n` +
-    `¡Gracias por confiar en nosotros! 💙💚`
+    `Hola${n} 🏗️\n\n` +
+    `Gracias por su compra en *${NEGOCIO.nombre}*.\n\n` +
+    `¿Cómo le fue con su entrega de concreto? ¿Todo bien con las yardas? 🙏\n\n` +
+    `Si necesita más concreto o tiene otra obra, escríbanos por aquí ` +
+    `y le atendemos enseguida.`
   );
 }
 
 /**
- * Envía la encuesta a un paciente.
+ * Envía la encuesta a un cliente.
  * @param {Object} opts
- * @param {string} opts.phone - teléfono en formato internacional (ej. 19453016982)
- * @param {string} opts.name - nombre del paciente (opcional)
+ * @param {string} opts.phone - teléfono en formato internacional (ej. 17863662018)
+ * @param {string} opts.name - nombre del cliente (opcional)
  * @param {string} opts.via - 'texto' (ventana 24h) o 'plantilla' (fuera de ventana)
  * @param {string} opts.templateName - requerido si via = 'plantilla'
  */
@@ -33,9 +33,9 @@ async function enviarEncuesta({ phone, name = '', via = 'texto', templateName = 
 
   if (via === 'plantilla') {
     if (!templateName) throw new Error('Se requiere templateName para envío por plantilla.');
-    // La plantilla aprobada debe incluir el enlace de reseña y el nombre como parámetros.
+    // La plantilla aprobada debe incluir el nombre como parámetro.
     metaId = await sendTemplate(waId, templateName, 'es', [
-      { type: 'body', parameters: [{ type: 'text', text: name || 'paciente' }] },
+      { type: 'body', parameters: [{ type: 'text', text: name || 'cliente' }] },
     ]);
   } else {
     metaId = await sendText(waId, textoEncuesta(name));

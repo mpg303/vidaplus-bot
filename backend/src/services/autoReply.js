@@ -1,9 +1,11 @@
 // ============================================================
 // Respuestas automáticas del bot (intents básicos en español).
-// Todo el texto visible al paciente está en español y usa los datos
-// reales de la clínica definidos en config.js (CLINICA).
+// Todo el texto visible al cliente está en español y usa los datos
+// reales del negocio definidos en config.js (NEGOCIO).
+// Negocio: JMP Concrete and Dispatch LLC — venta de concreto
+// por yarda cúbica en Dallas–Fort Worth.
 // ============================================================
-const { CLINICA, avisoApertura } = require('../config');
+const { NEGOCIO, avisoApertura } = require('../config');
 const db = require('../db');
 const { cfg } = require('../config');
 
@@ -23,15 +25,42 @@ const INTENTS = [
     keywords: [
       'hablar con alguien', 'quiero hablar', 'una persona', 'humano',
       'agente', 'asesor', 'operador', 'alguien que me atienda',
-      'me atienda alguien', 'persona real',
+      'me atienda alguien', 'persona real', 'jesus', 'morillo',
     ],
   },
   {
-    id: 'emergencia',
-    topic: 'una emergencia',
+    id: 'cotizacion',
+    topic: 'una cotización',
     keywords: [
-      'emergencia', 'urgencia', 'urgente', 'me siento mal',
-      'dolor fuerte', 'accidente', 'ayuda urgente',
+      'precio', 'costo', 'cuanto cuesta', 'cuánto cuesta',
+      'tarifa', 'cobran', 'vale', 'presupuesto', 'cotizacion',
+      'cotización', 'cotizar', 'presio', 'cuanto sale', 'cuanto vale',
+    ],
+  },
+  {
+    id: 'pedido',
+    topic: 'hacer un pedido',
+    keywords: [
+      'pedido', 'pedir', 'ordenar', 'quiero concreto', 'quiero yardas',
+      'necesito concreto', 'agendar entrega', 'programar', 'apartar',
+      'quiero comprar', 'me manda', 'envieme',
+    ],
+  },
+  {
+    id: 'entrega',
+    topic: 'el estatus de una entrega',
+    keywords: [
+      'entrega', 'camion', 'camión', 'truck', 'mixer', 'cuando llega',
+      'cuándo llega', 'ya viene', 'donde viene', 'estatus', 'status',
+      'retraso', 'atrasado', 'llego', 'llegó',
+    ],
+  },
+  {
+    id: 'pago',
+    topic: 'un pago',
+    keywords: [
+      'pago', 'pagar', 'zelle', 'factura', 'invoice', 'cuenta',
+      'debo', 'saldo', 'metodo de pago', 'cómo pago', 'como pago',
     ],
   },
   {
@@ -44,36 +73,12 @@ const INTENTS = [
     ],
   },
   {
-    id: 'precio',
-    topic: 'los precios',
-    keywords: [
-      'precio', 'costo', 'cuanto cuesta', 'cuánto cuesta',
-      'tarifa', 'cobran', 'vale', 'presupuesto',
-    ],
-  },
-  {
-    id: 'cita',
-    topic: 'agendar una cita',
-    keywords: [
-      'cita', 'agendar', 'reservar', 'apartar', 'consulta',
-      'quiero ir', 'cuando puedo ir', 'disponibilidad', 'turno',
-    ],
-  },
-  {
-    id: 'ubicacion',
-    topic: 'cómo llegar a la clínica',
+    id: 'zona',
+    topic: 'la zona de entrega',
     keywords: [
       'donde', 'dónde', 'direccion', 'dirección', 'ubicacion',
-      'ubicación', 'como llego', 'cómo llego', 'llegar',
-    ],
-  },
-  {
-    id: 'servicios',
-    topic: 'nuestros servicios',
-    keywords: [
-      'servicio', 'ofrecen', 'hacen', 'atienden', 'especialidad',
-      'especialidades', 'doctor', 'doctora', 'ultrasonido',
-      'examen', 'chequeo',
+      'ubicación', 'zona', 'area', 'área', 'cubren', 'llegan',
+      'dallas', 'fort worth', 'entregan',
     ],
   },
   {
@@ -96,7 +101,7 @@ const INTENTS = [
   },
 ];
 
-/** Detecta el intent de un mensaje del paciente. */
+/** Detecta el intent de un mensaje del cliente. */
 function detectarIntent(texto) {
   const t = ` ${normalizar(texto)} `;
   for (const intent of INTENTS) {
@@ -107,69 +112,87 @@ function detectarIntent(texto) {
   return { id: 'otro', topic: 'su mensaje', keywords: [] };
 }
 
+/** Datos que se piden para cotizar o pedir concreto. */
+function datosNecesarios() {
+  return (
+    `Para ayudarle necesito estos datos:\n` +
+    `1️⃣ ¿Cuántas yardas necesita?\n` +
+    `2️⃣ ¿Qué resistencia (PSI) o tipo de mezcla?\n` +
+    `3️⃣ Dirección de la obra\n` +
+    `4️⃣ ¿Para qué fecha lo necesita?`
+  );
+}
+
 /** Construye la respuesta en español para cada intent. */
 function construirRespuesta(intentId, nombre) {
   const n = nombre && nombre !== '' ? ` ${nombre}` : '';
-  const C = CLINICA;
+  const C = NEGOCIO;
   switch (intentId) {
     case 'saludo':
       return (
-        `¡Hola${n}! 👋 Bienvenido(a) a *${C.nombre}* 💙💚.\n` +
-        `¿En qué le podemos ayudar hoy? Puede preguntarnos por nuestros ` +
-        `*horarios*, *servicios*, *precios*, *citas* o *ubicación*.`
+        `¡Hola${n}! 🏗️ Bienvenido(a) a *${C.nombre}*.\n` +
+        `Vendemos concreto por yarda cúbica en ${C.zona}.\n` +
+        `¿En qué le ayudamos? Puede pedir una *cotización*, hacer un *pedido*, ` +
+        `preguntar por una *entrega* o un *pago*.`
+      );
+    case 'cotizacion':
+      return (
+        `Con gusto le cotizamos 🏗️.\n` +
+        `El precio por yarda depende de la planta y la mezcla, ` +
+        `así que le preparamos su cotización a la medida:\n\n` +
+        `${datosNecesarios()}\n\n` +
+        `Mándenos esos datos y le respondemos rapidito.`
+      );
+    case 'pedido':
+      return (
+        `¡Perfecto, le tomamos su pedido! 🏗️\n\n` +
+        `${datosNecesarios()}\n\n` +
+        `Con esos datos un especialista le confirma disponibilidad y precio ` +
+        `por aquí mismo.`
+      );
+    case 'entrega':
+      return (
+        `Le revisamos el estatus de su entrega 🚚.\n` +
+        `¿Me confirma su nombre y la dirección de la obra? ` +
+        `Un especialista le responde enseguida con la información.`
+      );
+    case 'pago':
+      return (
+        `Con gusto le ayudamos con su pago 💳.\n` +
+        `Escríbanos su nombre o número de factura y le pasamos los datos ` +
+        `para pagar. También puede llamarnos al ${C.whatsapp}.`
       );
     case 'horario':
       return (
-        `Nuestro horario es:\n` +
-        `📅 Lunes a sábado: 9:00 am – 12:00 am\n` +
-        `📅 Domingos: 10:00 am – 5:00 pm\n\n` +
+        `Trabajamos de *${C.horarioTexto}*.\n` +
+        `Las entregas se coordinan según disponibilidad de planta.\n\n` +
         `${avisoApertura()}`
       );
-    case 'servicios':
+    case 'zona':
       return (
-        `En *${C.nombre}* le atendemos con calidez 💙💚: medicina general, ` +
-        `ultrasonidos y otros servicios de salud para toda la familia.\n` +
-        `¿Qué necesita? Con gusto le orientamos.`
+        `Cubrimos *${C.zona}* 🏗️.\n` +
+        `¿Dónde es su obra? Le confirmamos la entrega.`
       );
-    case 'precio':
-      return (
-        `Los precios varían según el servicio que necesite. ` +
-        `¿Qué servicio le interesa? Con gusto le confirmamos el costo 💙💚.`
-      );
-    case 'cita':
-      return (
-        `Con gusto le agendamos su cita 📅.\n` +
-        `Díganos qué día y a qué hora le queda mejor y un especialista se la confirma ` +
-        `por aquí mismo. También puede llamarnos al ${C.whatsapp}.`
-      );
-    case 'ubicacion':
-      return `Estamos en 📍 *${C.direccion}*.\n${C.googleMapsUrl}`;
     case 'humano':
       return (
         `Con gusto 🙏. Un especialista le atenderá en breve por este mismo chat. ` +
         `Gracias por su paciencia.`
       );
-    case 'emergencia':
-      return (
-        `Si es una emergencia médica, por favor llame al *911* de inmediato 🚨.\n` +
-        `Para atención en la clínica, escríbanos o llámenos al ${C.whatsapp}.`
-      );
     case 'gracias':
       return (
-        `¡Con mucho gusto${n}! 💙💚 Estamos para servirle.\n` +
-        `Recuerde que trabajamos de lunes a sábado de 9:00 am a 12:00 am ` +
-        `y los domingos de 10:00 am a 5:00 pm.`
+        `¡Con mucho gusto${n}! 🏗️ Estamos para servirle.\n` +
+        `Cuando necesite concreto, aquí estamos: ${C.whatsapp}.`
       );
     case 'adios':
       return (
-        `¡Gracias por escribirnos${n}! 💙💚 Que tenga un excelente día. ` +
-        `Aquí estamos cuando nos necesite.`
+        `¡Gracias por escribirnos${n}! 🏗️ Que tenga un excelente día. ` +
+        `Aquí estamos cuando necesite concreto.`
       );
     default:
       return (
-        `Gracias por escribir a *${C.nombre}* 💙💚.\n` +
-        `¿En qué le podemos ayudar? Puede preguntarnos por *horarios*, ` +
-        `*servicios*, *precios*, *citas* o *ubicación*.`
+        `Gracias por escribir a *${C.nombre}* 🏗️.\n` +
+        `¿En qué le ayudamos? Puede pedir una *cotización*, hacer un *pedido*, ` +
+        `preguntar por una *entrega* o un *pago*.`
       );
   }
 }
