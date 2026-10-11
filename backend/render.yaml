@@ -1,0 +1,18 @@
+# Despliegue del backend en Render (plan gratuito sirve para empezar).
+# En el dashboard de Render: New > Blueprint > conectar este repo y elegir este archivo,
+# o crear un Web Service manual apuntando a la carpeta backend/.
+services:
+  - type: web
+    name: vidaplus-whatsapp-api
+    runtime: node
+    rootDir: proyecto/backend
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # El resto de variables (META_*, PANEL_*, etc.) se configuran
+      # en el dashboard de Render: Environment > Environment Variables.
+      # Ver proyecto/.env.example para la lista completa.

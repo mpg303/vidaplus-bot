@@ -1,0 +1,1 @@
+{"description":"Panel inbox del bot de WhatsApp de Clínica Hispana VidaPlus. Sitio estático (sin build), listo para Vercel.","name":"vidaplus-whatsapp-panel","private":true,"scripts":{"start":"npx --yes serve -l 5173 ."},"version":"0.1.0"}

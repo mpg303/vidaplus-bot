@@ -1,0 +1,248 @@
+/* Panel del bot de WhatsApp — Clínica Hispana VidaPlus (azul y verde) */
+:root {
+  --azul: #0b3d91;
+  --azul-oscuro: #082c6c;
+  --verde: #1faa53;
+  --verde-oscuro: #178a42;
+  --fondo: #eef2f7;
+  --blanco: #ffffff;
+  --gris: #8a94a6;
+  --burbuja-bot: #e8f4fd;
+  --burbuja-esp: #e6f9ec;
+  --burbuja-cli: #ffffff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: var(--fondo);
+  color: #1c2733;
+}
+.hidden { display: none !important; }
+.error { color: #c0392b; font-size: 0.9em; }
+
+/* ---- Login ---- */
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--azul) 0%, var(--verde) 100%);
+}
+.login-card {
+  background: var(--blanco);
+  padding: 2rem;
+  border-radius: 16px;
+  width: 340px;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0,0,0,.25);
+}
+.login-card .brand { font-size: 2.5rem; }
+.login-card h1 { margin: .5rem 0 0; font-size: 1.3rem; color: var(--azul); }
+.login-card .sub { color: var(--gris); margin: .25rem 0 1.25rem; }
+.login-card input, .camp-form input, .camp-form textarea {
+  width: 100%;
+  padding: .7rem;
+  margin-bottom: .7rem;
+  border: 1px solid #d5dce6;
+  border-radius: 8px;
+  font-size: 1rem;
+}
+.btn-primary {
+  background: var(--verde);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: .7rem 1.4rem;
+  font-size: 1rem;
+  cursor: pointer;
+}
+.btn-primary:hover { background: var(--verde-oscuro); }
+.btn-small {
+  background: var(--azul);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: .45rem .8rem;
+  cursor: pointer;
+  font-size: .85rem;
+}
+.btn-small:hover { background: var(--azul-oscuro); }
+.btn-small.warn { background: #c0392b; }
+
+/* ---- Topbar ---- */
+.topbar {
+  background: var(--azul);
+  color: #fff;
+  padding: .7rem 1.2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.topbar-title { font-weight: 700; font-size: 1.05rem; }
+.topbar-title .tag {
+  background: var(--verde);
+  border-radius: 20px;
+  font-size: .75rem;
+  padding: .15rem .6rem;
+  margin-left: .4rem;
+  font-weight: 400;
+}
+.tabs { display: flex; gap: .4rem; }
+.tab {
+  background: transparent;
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.35);
+  border-radius: 8px;
+  padding: .45rem .9rem;
+  cursor: pointer;
+}
+.tab.active, .tab:hover { background: rgba(255,255,255,.18); }
+.tab.logout { border-color: rgba(255,255,255,.15); opacity: .8; }
+
+/* ---- Inbox ---- */
+.tabpane { height: calc(100vh - 57px); }
+#tab-inbox { display: flex; }
+.conversations {
+  width: 320px;
+  min-width: 320px;
+  background: var(--blanco);
+  border-right: 1px solid #dbe2ec;
+  display: flex;
+  flex-direction: column;
+}
+.conv-header {
+  padding: .9rem 1rem;
+  font-weight: 700;
+  border-bottom: 1px solid #e7ecf3;
+  color: var(--azul);
+}
+#conv-list { overflow-y: auto; flex: 1; }
+.conv {
+  padding: .8rem 1rem;
+  border-bottom: 1px solid #eef1f6;
+  cursor: pointer;
+}
+.conv:hover { background: #f5f8fc; }
+.conv.active { background: #e8f1fd; border-left: 4px solid var(--azul); }
+.conv-top { display: flex; justify-content: space-between; align-items: center; }
+.conv-name { font-weight: 600; }
+.conv-time { font-size: .75rem; color: var(--gris); }
+.conv-preview { font-size: .85rem; color: var(--gris); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.unread {
+  background: var(--verde);
+  color: #fff;
+  border-radius: 50%;
+  min-width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .75rem;
+  font-weight: 700;
+}
+.flag-human { color: #c0392b; font-size: .8rem; font-weight: 700; }
+.flag-paused { color: #b7791f; font-size: .8rem; font-weight: 700; }
+
+.chat { flex: 1; display: flex; flex-direction: column; background: #f7fafd; }
+.chat-empty {
+  margin: auto;
+  color: var(--gris);
+  font-size: 1.1rem;
+}
+#chat-active { display: flex; flex-direction: column; height: 100%; }
+.chat-header {
+  background: var(--blanco);
+  padding: .7rem 1rem;
+  border-bottom: 1px solid #dbe2ec;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.chat-name { font-weight: 700; color: var(--azul); }
+.chat-meta { font-size: .8rem; color: var(--gris); }
+.chat-actions { display: flex; gap: .5rem; }
+.messages { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: .5rem; }
+.msg {
+  max-width: 70%;
+  padding: .6rem .9rem;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: .95rem;
+}
+.msg .meta { font-size: .7rem; color: var(--gris); margin-top: .3rem; }
+.msg.cli { align-self: flex-start; background: var(--burbuja-cli); border: 1px solid #e2e8f0; }
+.msg.bot { align-self: flex-end; background: var(--burbuja-bot); border: 1px solid #cfe8fb; }
+.msg.esp { align-self: flex-end; background: var(--burbuja-esp); border: 1px solid #bfe8cb; }
+.msg .role {
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: .2rem;
+}
+.msg.bot .role { color: var(--azul); }
+.msg.esp .role { color: var(--verde-oscuro); }
+.msg.cli .role { color: var(--gris); }
+.reply-box {
+  display: flex;
+  gap: .6rem;
+  padding: .8rem;
+  background: var(--blanco);
+  border-top: 1px solid #dbe2ec;
+}
+.reply-box textarea {
+  flex: 1;
+  border: 1px solid #d5dce6;
+  border-radius: 8px;
+  padding: .6rem;
+  font-size: 1rem;
+  resize: none;
+}
+
+/* ---- Campañas ---- */
+#tab-campaigns { overflow-y: auto; }
+.camp-wrap {
+  display: flex;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.camp-form, .camp-list {
+  background: var(--blanco);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 10px rgba(0,0,0,.06);
+}
+.camp-form { width: 380px; min-width: 380px; }
+.camp-list { flex: 1; }
+.camp-form h2, .camp-list h2 { margin-top: 0; color: var(--azul); }
+.camp-form .hint { font-size: .85rem; color: var(--gris); }
+.camp-form label { display: block; font-size: .9rem; font-weight: 600; margin-bottom: .2rem; }
+.camp-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.camp-card h3 { margin: 0 0 .3rem; }
+.camp-stats { display: flex; gap: 1rem; font-size: .85rem; color: var(--gris); margin: .4rem 0; }
+.camp-stats b { color: #1c2733; }
+.pill {
+  display: inline-block;
+  padding: .15rem .6rem;
+  border-radius: 20px;
+  font-size: .75rem;
+  font-weight: 700;
+  background: #eef2f7;
+}
+.pill.ok { background: #dcf5e5; color: var(--verde-oscuro); }
+.pill.err { background: #fbe3e0; color: #c0392b; }
+.recipient { font-size: .82rem; padding: .2rem 0; border-bottom: 1px dashed #eef1f6; }
+@media (max-width: 900px) {
+  .camp-wrap { flex-direction: column; }
+  .camp-form { width: 100%; min-width: 0; }
+  .conversations { width: 240px; min-width: 240px; }
+}
