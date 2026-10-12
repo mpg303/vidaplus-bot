@@ -179,11 +179,17 @@ function setNeedsHuman(id, value) {
   }
 }
 
-function updateMessageStatus(metaId, status) {
+function updateMessageStatus(metaId, status, errors) {
   const db = load();
   const m = db.messages.find((x) => x.metaId === metaId);
   if (m) {
     m.status = status;
+    // Si Meta reporta error de entrega, guardar el detalle completo
+    // (code, title, message, error_data.details) para diagnóstico.
+    if (Array.isArray(errors) && errors.length) {
+      m.flags = m.flags || {};
+      m.flags.deliveryErrors = errors;
+    }
     save();
   }
 }
