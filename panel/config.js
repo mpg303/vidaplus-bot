@@ -5,5 +5,5 @@
 // desplegar el panel en Vercel. En local: http://localhost:3000
 // ============================================================
 window.VIDAPLUS_CONFIG = {
-  BACKEND_URL: 'http://localhost:3000',
+  BACKEND_URL: 'https://jmpconcrete-whatsapp-api.onrender.com',
 };
