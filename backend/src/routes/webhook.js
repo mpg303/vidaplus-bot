@@ -71,7 +71,12 @@ router.post('/', async (req, res) => {
 
         // --- Estados de entrega (sent/delivered/read/failed) ---
         for (const st of value.statuses || []) {
-          if (st.id && st.status) db.updateMessageStatus(st.id, st.status);
+          if (st.id && st.status) {
+            db.updateMessageStatus(st.id, st.status, st.errors);
+            if (st.status === 'failed' && st.errors?.length) {
+              console.error('[webhook] entrega FALLIDA:', JSON.stringify(st.errors));
+            }
+          }
         }
 
         // --- Mensajes entrantes ---
