@@ -22,6 +22,7 @@ const { sendText } = require('../services/send');
 const { enviarEncuesta } = require('../services/survey');
 const followup = require('../services/followup');
 const campaign = require('../services/campaign');
+const autoReply = require('../services/autoReply');
 
 const router = express.Router();
 
@@ -132,6 +133,50 @@ router.get('/campaigns/:id', (req, res) => {
 router.post('/campaigns/:id/cancel', (req, res) => {
   campaign.cancelar(req.params.id);
   res.json({ ok: true });
+});
+
+// ---- Respuestas automáticas editables (editor del panel) ----
+router.get('/replies', (req, res) => {
+  res.json(autoReply.listarRespuestas());
+});
+
+router.post('/replies/:id', (req, res) => {
+  const id = req.params.id;
+  if (!autoReply.esIntentValido(id)) {
+    return res.status(404).json({ error: 'Respuesta no encontrada.' });
+  }
+  const { text, keywords } = req.body || {};
+  const patch = {};
+  if (text !== undefined) {
+    const t = String(text || '').trim();
+    if (!t) return res.status(400).json({ error: 'El texto no puede estar vacío.' });
+    if (t.length > 2000) return res.status(400).json({ error: 'El texto es demasiado largo (máx. 2000 caracteres).' });
+    patch.text = t;
+  }
+  if (keywords !== undefined) {
+    let arr = Array.isArray(keywords)
+      ? keywords
+      : String(keywords || '').split(',');
+    arr = arr.map((k) => String(k).trim().toLowerCase()).filter(Boolean).slice(0, 80);
+    if (arr.some((k) => k.length > 80)) {
+      return res.status(400).json({ error: 'Cada palabra clave debe tener máx. 80 caracteres.' });
+    }
+    patch.keywords = arr;
+  }
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: 'Nada que guardar.' });
+  }
+  db.setReplyOverride(id, patch);
+  res.json({ ok: true, item: autoReply.listarRespuestas().find((r) => r.id === id) });
+});
+
+router.post('/replies/:id/reset', (req, res) => {
+  const id = req.params.id;
+  if (!autoReply.esIntentValido(id)) {
+    return res.status(404).json({ error: 'Respuesta no encontrada.' });
+  }
+  db.clearReplyOverride(id);
+  res.json({ ok: true, item: autoReply.listarRespuestas().find((r) => r.id === id) });
 });
 
 module.exports = router;
