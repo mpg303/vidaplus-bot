@@ -82,7 +82,9 @@ document.querySelectorAll('.tab[data-tab]').forEach((btn) => {
     btn.classList.add('active');
     document.getElementById('tab-inbox').classList.toggle('hidden', btn.dataset.tab !== 'inbox');
     document.getElementById('tab-campaigns').classList.toggle('hidden', btn.dataset.tab !== 'campaigns');
+    document.getElementById('tab-replies').classList.toggle('hidden', btn.dataset.tab !== 'replies');
     if (btn.dataset.tab === 'campaigns') cargarCampanas();
+    if (btn.dataset.tab === 'replies') cargarRespuestas();
   });
 });
 
@@ -298,6 +300,65 @@ async function verDetalleCampana(id) {
       .map((r) => `${r.status === 'enviado' ? '✅' : r.status === 'error' ? '❌' : '⏳'} ${r.phone} ${esc(r.name || '')}${r.error ? ' — ' + esc(r.error) : ''}`)
       .join('\n');
     alert(`Campaña: ${c.name}\nEstado: ${c.status}\n\n${lineas}`);
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+// ---------------- Respuestas del bot (editor) ----------------
+async function cargarRespuestas() {
+  const box = document.getElementById('replies-list');
+  try {
+    const items = await api('/api/replies');
+    box.innerHTML = '';
+    for (const r of items) {
+      const card = document.createElement('div');
+      card.className = 'camp-card reply-card';
+      card.innerHTML = `
+        <h3>${esc(r.label)} ${r.edited ? '<span class="pill">✏️ editada</span>' : ''}</h3>
+        ${r.id !== 'otro' ? `<label>Palabras clave (separadas por comas)
+          <input type="text" class="reply-keywords" value="${esc(r.keywords.join(', '))}">
+        </label>` : '<p class="hint">Esta respuesta se usa cuando el mensaje del cliente no coincide con ningún tema.</p>'}
+        <label>Texto que recibe el cliente
+          <textarea class="reply-text" rows="6">${esc(r.text)}</textarea>
+        </label>
+        <div class="reply-actions">
+          <button class="btn-primary btn-small" data-save="${r.id}">💾 Guardar</button>
+          ${r.edited ? `<button class="btn-small warn" data-reset="${r.id}">↩️ Volver al texto original</button>` : ''}
+        </div>`;
+      box.appendChild(card);
+    }
+    box.querySelectorAll('[data-save]').forEach((b) =>
+      b.addEventListener('click', () => guardarRespuesta(b)));
+    box.querySelectorAll('[data-reset]').forEach((b) =>
+      b.addEventListener('click', () => restablecerRespuesta(b.dataset.reset)));
+  } catch (e) {
+    box.innerHTML = '<p class="error">No se pudieron cargar las respuestas: ' + esc(e.message) + '</p>';
+  }
+}
+
+async function guardarRespuesta(btn) {
+  const card = btn.closest('.reply-card');
+  const id = btn.dataset.save;
+  const body = { text: card.querySelector('.reply-text').value };
+  const kw = card.querySelector('.reply-keywords');
+  if (kw) body.keywords = kw.value;
+  btn.disabled = true;
+  try {
+    await api(`/api/replies/${id}`, { method: 'POST', body: JSON.stringify(body) });
+    alert('✅ Respuesta guardada. El bot ya usa el texto nuevo.');
+    cargarRespuestas();
+  } catch (e) {
+    alert('No se pudo guardar: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+async function restablecerRespuesta(id) {
+  if (!confirm('¿Volver al texto y palabras clave originales de esta respuesta?')) return;
+  try {
+    await api(`/api/replies/${id}/reset`, { method: 'POST', body: '{}' });
+    cargarRespuestas();
   } catch (e) {
     alert('Error: ' + e.message);
   }
