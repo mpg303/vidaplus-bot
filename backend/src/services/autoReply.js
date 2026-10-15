@@ -21,6 +21,7 @@ function normalizar(texto) {
 const INTENTS = [
   {
     id: 'humano',
+    label: '🙋 Hablar con un especialista',
     topic: 'hablar con un especialista',
     keywords: [
       'hablar con alguien', 'quiero hablar', 'una persona', 'humano',
@@ -30,6 +31,7 @@ const INTENTS = [
   },
   {
     id: 'cotizacion',
+    label: '💲 Cotización',
     topic: 'una cotización',
     keywords: [
       'precio', 'costo', 'cuanto cuesta', 'cuánto cuesta',
@@ -39,6 +41,7 @@ const INTENTS = [
   },
   {
     id: 'pedido',
+    label: '🧾 Hacer un pedido',
     topic: 'hacer un pedido',
     keywords: [
       'pedido', 'pedir', 'ordenar', 'quiero concreto', 'quiero yardas',
@@ -48,6 +51,7 @@ const INTENTS = [
   },
   {
     id: 'entrega',
+    label: '🚚 Estatus de entrega',
     topic: 'el estatus de una entrega',
     keywords: [
       'entrega', 'camion', 'camión', 'truck', 'mixer', 'cuando llega',
@@ -57,6 +61,7 @@ const INTENTS = [
   },
   {
     id: 'pago',
+    label: '💳 Pagos',
     topic: 'un pago',
     keywords: [
       'pago', 'pagar', 'zelle', 'factura', 'invoice', 'cuenta',
@@ -65,6 +70,7 @@ const INTENTS = [
   },
   {
     id: 'horario',
+    label: '🕐 Horario',
     topic: 'los horarios',
     keywords: [
       'horario', 'hora abren', 'hora cierran', 'abren', 'cierran',
@@ -74,6 +80,7 @@ const INTENTS = [
   },
   {
     id: 'zona',
+    label: '📍 Zona de cobertura',
     topic: 'la zona de entrega',
     keywords: [
       'donde', 'dónde', 'direccion', 'dirección', 'ubicacion',
@@ -83,16 +90,19 @@ const INTENTS = [
   },
   {
     id: 'gracias',
+    label: '🙏 Cuando dan las gracias',
     topic: 'un agradecimiento',
     keywords: ['gracias', 'thank you', 'mil gracias', 'te agradezco'],
   },
   {
     id: 'adios',
+    label: '👋 Despedida',
     topic: 'una despedida',
     keywords: ['adios', 'adiós', 'bye', 'nos vemos', 'hasta luego', 'chao'],
   },
   {
     id: 'saludo',
+    label: '👋 Saludo inicial',
     topic: 'su saludo',
     keywords: [
       'hola', 'buenas', 'buenos dias', 'buenas tardes',
@@ -101,15 +111,75 @@ const INTENTS = [
   },
 ];
 
+/** Palabras clave efectivas: las editadas en el panel mandan sobre las de fábrica. */
+function keywordsEfectivas(intent) {
+  const ov = db.getReplyOverrides()[intent.id];
+  return (ov && Array.isArray(ov.keywords) && ov.keywords.length) ? ov.keywords : intent.keywords;
+}
+
 /** Detecta el intent de un mensaje del cliente. */
 function detectarIntent(texto) {
   const t = ` ${normalizar(texto)} `;
   for (const intent of INTENTS) {
-    if (intent.keywords.some((k) => t.includes(normalizar(k)))) {
+    if (keywordsEfectivas(intent).some((k) => t.includes(normalizar(k)))) {
       return intent;
     }
   }
   return { id: 'otro', topic: 'su mensaje', keywords: [] };
+}
+
+/**
+ * Texto efectivo de una respuesta: si el dueño editó el texto en el panel,
+ * se usa ese (con variables {nombre}, {negocio}, {zona}, {telefono}, {horario});
+ * si no, el texto de fábrica de construirRespuesta().
+ */
+function textoEfectivo(intentId, nombre) {
+  const ov = db.getReplyOverrides()[intentId];
+  if (ov && typeof ov.text === 'string' && ov.text.trim()) {
+    return ov.text
+      .replaceAll('{nombre}', nombre || '')
+      .replaceAll('{negocio}', NEGOCIO.nombre)
+      .replaceAll('{zona}', NEGOCIO.zona)
+      .replaceAll('{telefono}', NEGOCIO.whatsapp)
+      .replaceAll('{horario}', NEGOCIO.horarioTexto)
+      .replace(/  +/g, ' ')
+      .trim();
+  }
+  return construirRespuesta(intentId, nombre);
+}
+
+/** Lista completa para el editor del panel: textos y palabras clave, de fábrica y efectivos. */
+function listarRespuestas() {
+  const overrides = db.getReplyOverrides();
+  const items = INTENTS.map((intent) => {
+    const ov = overrides[intent.id] || {};
+    return {
+      id: intent.id,
+      label: intent.label || intent.id,
+      topic: intent.topic,
+      keywords: keywordsEfectivas(intent),
+      keywordsDefault: intent.keywords,
+      text: textoEfectivo(intent.id, ''),
+      defaultText: construirRespuesta(intent.id, ''),
+      edited: Boolean(ov.text || ov.keywords),
+    };
+  });
+  const ovOtro = overrides['otro'] || {};
+  items.push({
+    id: 'otro',
+    label: '💬 Cuando no entiende el mensaje',
+    topic: 'su mensaje',
+    keywords: [],
+    keywordsDefault: [],
+    text: textoEfectivo('otro', ''),
+    defaultText: construirRespuesta('otro', ''),
+    edited: Boolean(ovOtro.text),
+  });
+  return items;
+}
+
+function esIntentValido(id) {
+  return id === 'otro' || INTENTS.some((i) => i.id === id);
 }
 
 /** Datos que se piden para cotizar o pedir concreto. */
@@ -217,8 +287,8 @@ function decidirRespuesta(conversacion, textoCliente) {
     }
   }
   const intent = detectarIntent(textoCliente);
-  const texto = construirRespuesta(intent.id, conversacion.name);
+  const texto = textoEfectivo(intent.id, conversacion.name);
   return { responder: true, texto, intent: intent.id, topic: intent.topic };
 }
 
-module.exports = { detectarIntent, construirRespuesta, decidirRespuesta };
+module.exports = { detectarIntent, construirRespuesta, decidirRespuesta, listarRespuestas, esIntentValido, INTENTS };
