@@ -248,3 +248,9 @@ body {
   .camp-form { width: 100%; min-width: 0; }
   .conversations { width: 240px; min-width: 240px; }
 }
+
+/* ===== Editor de respuestas ===== */
+.replies-wrap { max-width: 860px; margin: 0 auto; padding: 16px; }
+.reply-card label { display: block; margin: 10px 0; font-size: .9rem; }
+.reply-card input[type="text"], .reply-card textarea { width: 100%; box-sizing: border-box; margin-top: 4px; }
+.reply-actions { display: flex; gap: 8px; margin-top: 8px; }
