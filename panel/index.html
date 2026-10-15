@@ -29,6 +29,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="inbox">📥 Bandeja</button>
       <button class="tab" data-tab="campaigns">📣 Campañas</button>
+      <button class="tab" data-tab="replies">✏️ Respuestas</button>
       <button id="logout-btn" class="tab logout">Salir</button>
     </nav>
   </header>
@@ -80,6 +81,15 @@
         <h2>Historial</h2>
         <div id="campaigns"></div>
       </div>
+    </div>
+  </section>
+  <!-- ===== Respuestas del bot ===== -->
+  <section id="tab-replies" class="tabpane hidden">
+    <div class="replies-wrap">
+      <h2>Respuestas del bot</h2>
+      <p class="hint">Aquí usted le enseña al bot qué responder. Cada tarjeta es un tema: edite el <strong>texto</strong> que recibe el cliente y las <strong>palabras clave</strong> que activan esa respuesta (separadas por comas). Los cambios aplican de inmediato, sin reiniciar nada.</p>
+      <p class="hint">Puede usar estas variables en el texto: <strong>{nombre}</strong> = nombre del cliente, <strong>{negocio}</strong>, <strong>{zona}</strong>, <strong>{telefono}</strong>, <strong>{horario}</strong>.</p>
+      <div id="replies-list"></div>
     </div>
   </section>
 </div>
