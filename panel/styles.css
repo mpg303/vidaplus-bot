@@ -33,7 +33,7 @@ body {
   background: var(--blanco);
   padding: 2rem;
   border-radius: 16px;
-  width: 340px;
+  width: min(340px, 92vw);
   text-align: center;
   box-shadow: 0 12px 40px rgba(0,0,0,.25);
 }
@@ -103,7 +103,9 @@ body {
 .tab.logout { border-color: rgba(255,255,255,.15); opacity: .8; }
 
 /* ---- Inbox ---- */
-.tabpane { height: calc(100vh - 57px); }
+#app-view { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+.tabpane { flex: 1; min-height: 0; }
+#tab-replies { overflow-y: auto; }
 #tab-inbox { display: flex; }
 .conversations {
   width: 320px;
@@ -161,7 +163,9 @@ body {
   justify-content: space-between;
   align-items: center;
 }
-.chat-name { font-weight: 700; color: var(--azul); }
+.chat-head-info { flex: 1; min-width: 0; }
+.chat-name { font-weight: 700; color: var(--azul); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.btn-back { display: none; }
 .chat-meta { font-size: .8rem; color: var(--gris); }
 .chat-actions { display: flex; gap: .5rem; }
 .messages { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: .5rem; }
@@ -254,3 +258,26 @@ body {
 .reply-card label { display: block; margin: 10px 0; font-size: .9rem; }
 .reply-card input[type="text"], .reply-card textarea { width: 100%; box-sizing: border-box; margin-top: 4px; }
 .reply-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* ===== Vista móvil (celular) ===== */
+@media (max-width: 768px) {
+  .topbar { flex-direction: column; align-items: stretch; gap: .55rem; padding: .65rem .8rem; }
+  .topbar-title { font-size: 1rem; display: flex; align-items: center; gap: .45rem; }
+  .topbar-title .tag { margin-left: auto; }
+  .tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; }
+  .tab { padding: .6rem .1rem; font-size: .82rem; min-height: 46px; border-radius: 10px; }
+  .conversations { width: 100%; min-width: 0; border-right: none; }
+  .conv { padding: .95rem 1rem; }
+  #tab-inbox .chat { display: none; }
+  #tab-inbox.chat-open .conversations { display: none; }
+  #tab-inbox.chat-open .chat { display: flex; }
+  .btn-back { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex: 0 0 auto; border-radius: 10px; border: 1px solid #dbe2ec; background: #f2f6fb; color: var(--azul); font-size: 1.3rem; cursor: pointer; }
+  .chat-header { gap: .6rem; padding: .6rem .7rem; flex-wrap: wrap; }
+  .chat-actions .btn-small { padding: .55rem .6rem; font-size: .8rem; min-height: 40px; }
+  .messages { padding: .7rem; }
+  .msg { max-width: 88%; }
+  .reply-box { padding: .6rem; padding-bottom: calc(.6rem + env(safe-area-inset-bottom)); }
+  .camp-wrap { padding: 1rem; gap: 1rem; }
+  .replies-wrap { padding: 12px; }
+  .login-card { padding: 1.5rem 1.2rem; }
+}

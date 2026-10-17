@@ -129,6 +129,7 @@ function esc(s) {
 
 async function abrirChat(id) {
   convActiva = id;
+  document.getElementById('tab-inbox').classList.add('chat-open');
   document.getElementById('chat-empty').classList.add('hidden');
   document.getElementById('chat-active').classList.remove('hidden');
   await cargarChat(id);
@@ -183,6 +184,9 @@ async function enviarRespuesta() {
     ta.value = texto;
   }
 }
+document.getElementById('btn-back').addEventListener('click', () => {
+  document.getElementById('tab-inbox').classList.remove('chat-open');
+});
 document.getElementById('reply-btn').addEventListener('click', enviarRespuesta);
 document.getElementById('reply-text').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
