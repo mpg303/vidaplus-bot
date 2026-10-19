@@ -657,6 +657,41 @@ function confirmacionDe(campo, datos) {
 }
 
 /**
+ * ¿El mensaje es SOLO un saludo? («hola», «buenas», «hello»,
+ * «buenas tardes», «hola buenas»…). Cuando un cliente retoma una
+ * conversación a mitad del flujo y escribe un saludo, el bot debe
+ * RETOMAR donde iba (volver a preguntar el dato que falta), nunca
+ * guardar el saludo como si fuera un dato (mix, dirección, fecha
+ * o nombre) ni mandar la bienvenida de nuevo.
+ */
+function esSaludoPuro(texto) {
+  const t = normalizar(texto)
+    .replace(/[^a-z ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!t) return false;
+  const frases = [
+    'buenas noches', 'buenas tardes', 'buenos dias', 'buen dia',
+    'que tal', 'hola', 'buenas', 'hello', 'hi', 'hey', 'saludos',
+  ];
+  let resto = t;
+  let consumio = false;
+  let avance = true;
+  while (resto && avance) {
+    avance = false;
+    for (const f of frases) {
+      if (resto === f || resto.startsWith(f + ' ')) {
+        resto = resto.slice(f.length).trim();
+        consumio = true;
+        avance = true;
+        break;
+      }
+    }
+  }
+  return consumio && resto === '';
+}
+
+/**
  * ¿El cliente está preguntando el PRECIO? Para el dueño, el
  * «¿cuánto?» del cliente siempre es el precio. Se excluyen las
  * preguntas de duración («cuánto tarda/tiempo/demora…»).
@@ -865,7 +900,15 @@ function resumenCliente(datos, nombre) {
 function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const flow = conversacion.flow;
   const pasoPedido = pasoActual(flow);
-  const detectados = extraerDatos(textoCliente, pasoPedido);
+  // RETOMA (regla del dueño): si el cliente vuelve a escribir a
+  // mitad del flujo con un saludo PURO («hola», «buenas», «hello»…),
+  // el saludo NO es un dato: no se captura como mix, dirección,
+  // fecha ni nombre. Solo se vuelve a preguntar el dato que falta,
+  // sin bienvenida ni menú. (Si el mensaje trae saludo Y un dato,
+  // no es saludo puro y el dato sí se captura, como siempre.)
+  const detectados = esSaludoPuro(textoCliente)
+    ? {}
+    : extraerDatos(textoCliente, pasoPedido);
   const nuevos = fusionarDatos(flow, detectados);
 
   // Forma de pago genérica («tarjeta» sin decir débito o crédito):
@@ -976,14 +1019,30 @@ function abreFlujo(intent, textoCliente) {
 /**
  * Decide si el bot debe responder a un mensaje entrante del cliente.
  * NO responde si:
- *  - el bot está pausado para esa conversación (lo atiende un humano), o
+ *  - el bot está pausado para esa conversación (lo atiende un humano),
+ *  - la conversación está marcada needsHuman (flujo completado o el
+ *    cliente pidió una persona: queda para el especialista, sin
+ *    reabrir la bienvenida ni reiniciar el flujo), o
  *  - un ESPECIALISTA respondió hace menos de AUTOREPLY_HUMAN_PAUSE_MIN minutos
  *    (para no interrumpir la conversación humana).
+ * RETOMA: con un flujo ACTIVO, un mensaje nuevo del cliente (saludo,
+ * mensaje corto o el dato siguiente) continúa el flujo donde iba:
+ * jamás se manda la bienvenida ni el menú a mitad del flujo, y el
+ * flujo no vence por tiempo (el estado persiste en la base).
  * Devuelve { responder, texto, intent, topic, motivo, confirmacionArmada? }.
  */
 function decidirRespuesta(conversacion, textoCliente) {
   if (conversacion.botPaused) {
     return { responder: false, motivo: 'bot pausado por especialista' };
+  }
+  // Conversación esperando a un ESPECIALISTA (flujo ya completado
+  // con la confirmación armada, o el cliente pidió una persona):
+  // un mensaje nuevo del cliente NO reabre la bienvenida ni
+  // reinicia el flujo; la conversación queda para el especialista.
+  // (Cuando el especialista responde desde el panel, addMessage
+  // limpia needsHuman y el bot vuelve a atender con normalidad.)
+  if (conversacion.needsHuman) {
+    return { responder: false, motivo: 'esperando atención de un especialista' };
   }
   const ultimoHumano = db.lastMessageFrom(conversacion.id, 'ESPECIALISTA');
   if (ultimoHumano) {
@@ -1060,4 +1119,5 @@ module.exports = {
   fechaCortaEntrega,
   esPreguntaPrecio,
   preguntaSobreAire,
+  esSaludoPuro,
 };
