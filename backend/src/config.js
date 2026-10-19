@@ -49,7 +49,7 @@ const cfg = {
 
   // Si un humano (ESPECIALISTA) respondió hace menos de estos minutos,
   // el bot NO interrumpe con respuestas automáticas.
-  autoreplyHumanPauseMin: parseInt(process.env.AUTOREPLY_HUMAN_PAUSE_MIN || '30', 10),
+  autoreplyHumanPauseMin: parseInt(process.env.AUTOREPLY_HUMAN_PAUSE_MIN || '2', 10),
 
   dataDir: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
 
