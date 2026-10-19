@@ -433,7 +433,7 @@ function extraerDatos(texto, paso) {
     raw.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo/i);
   if (mFecha) {
     d.fecha = mFecha[0].trim();
-  } else if (paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw) && !esPreguntaPrecio(raw)) {
+  } else if (paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw) && !esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
     // Respuesta corta al «¿para qué día?»: se toma tal cual
     // (una pregunta de precio jamás se toma como fecha).
     d.fecha = raw.replace(/[. ]+$/, '');
@@ -442,7 +442,10 @@ function extraerDatos(texto, paso) {
   const esDireccion = pareceDireccion(raw);
 
   // --- Aire (va junto con el mix: «aire o no aire») ---
-  const aire = extraerAire(raw);
+  // Si el mensaje PREGUNTA sobre el aire («¿qué es el aire?»), la
+  // palabra «aire» es parte de la pregunta, no una respuesta: no se
+  // captura como dato (el bot explica y vuelve a preguntar).
+  const aire = preguntaSobreAire(raw) ? null : extraerAire(raw);
   if (aire) d.aire = aire;
 
   // --- Mix ---
@@ -453,8 +456,9 @@ function extraerDatos(texto, paso) {
     // En el paso del mix, todo el mensaje ES la descripción del mix
     // (ej. «High early mix / mix 275-P»), tal como la dio el cliente,
     // sin la frase del aire (ese dato va aparte). Una pregunta de
-    // precio («¿cuánto sale?») NO es un mix: no se captura.
-    const mixTexto = esPreguntaPrecio(raw) ? '' : quitarFrasesAire(raw);
+    // precio («¿cuánto sale?») o sobre el aire («¿qué es el aire?»)
+    // NO es un mix: no se captura.
+    const mixTexto = esPreguntaPrecio(raw) || preguntaSobreAire(raw) ? '' : quitarFrasesAire(raw);
     if (mixTexto) d.mix = mixTexto.replace(/[. ]+$/, '');
   } else {
     const mMix = raw.match(/\b(?:mix|mezcla)\b[^,.;]*/i);
@@ -471,7 +475,8 @@ function extraerDatos(texto, paso) {
     !d.yardas &&
     !d.fecha &&
     !d.hora &&
-    !esPreguntaPrecio(raw)
+    !esPreguntaPrecio(raw) &&
+    !preguntaSobreAire(raw)
   ) {
     // Respuesta corta al «¿cuál es la dirección?»: se toma tal cual
     // (conserva saltos de línea, ej. la línea «Estados Unidos»).
@@ -536,6 +541,42 @@ function esPreguntaPrecio(texto) {
 const LINEA_PRECIO =
   'El precio depende de la planta y del mix 🏗️ Con los datos de su orden se lo confirmamos enseguida.';
 
+/**
+ * ¿El cliente pregunta QUÉ ES el aire o para qué sirve? Mucha gente
+ * no sabe: hay que explicarlo simple y volver a preguntar.
+ * Devuelve 'es', 'en' o null.
+ */
+function preguntaSobreAire(texto) {
+  const t = normalizar(texto);
+  if (
+    /\bwhat is (the )?air\b/.test(t) ||
+    /\bwhat'?s air\b/.test(t) ||
+    /\bwhat does air (do|mean)\b/.test(t)
+  ) {
+    return 'en';
+  }
+  if (
+    /\b(que es|para que es|para que sirve|que significa|que quiere decir)\b[^.?!]*\baire\b/.test(t) ||
+    /\baire\b[^.?!]*\b(que es|para que es|para que sirve)\b/.test(t)
+  ) {
+    return 'es';
+  }
+  return null;
+}
+
+/** Explicación simple del aire en el concreto (sin tecnicismos ni precios). */
+const EXPLICACION_AIRE_ES =
+  'El aire en el concreto son unas burbujitas microscópicas que se agregan a la mezcla. ' +
+  'Sirven para que el concreto aguante mejor el frío y los cambios de temperatura sin agrietarse; ' +
+  'se usa sobre todo en trabajos de exterior como entradas, patios y banquetas. ' +
+  'Para pisos de interior o acabados muy lisos, normalmente se pide sin aire, porque queda más fuerte y liso.';
+
+const EXPLICACION_AIRE_EN =
+  'Air in concrete is made of tiny microscopic bubbles that are added to the mix. ' +
+  'They help the concrete hold up better against cold and temperature changes without cracking; ' +
+  "it's used mostly for outdoor work like driveways, patios and sidewalks. " +
+  "For indoor floors or very smooth finishes, it's normally ordered without air, because it comes out stronger and smoother.";
+
 /** La pregunta por el dato que falta, en el orden del dueño. */
 function preguntaPara(paso, datos) {
   switch (paso) {
@@ -543,10 +584,10 @@ function preguntaPara(paso, datos) {
       return '¿Cuántas yardas necesita?';
     case 'mix':
       // Con el mix se pregunta también el aire («aire o no aire»);
-      // si el mix ya está y solo falta el aire, se pregunta solo eso.
-      return datos.mix
-        ? '¿Y el concreto va con aire o no aire?'
-        : '¿Qué mix o resistencia (PSI) necesita? ¿Y el concreto va con aire o no aire?';
+      // si ya está uno de los dos, se pregunta solo el que falta.
+      if (datos.mix && !datos.aire) return '¿Y el concreto va con aire o no aire?';
+      if (!datos.mix && datos.aire) return '¿Qué mix o resistencia (PSI) necesita?';
+      return '¿Qué mix o resistencia (PSI) necesita? ¿Y el concreto va con aire o no aire?';
     case 'direccion':
       return '¿Cuál es la dirección completa de la obra?';
     case 'fecha':
@@ -672,6 +713,35 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const nuevos = fusionarDatos(flow, detectados);
 
   const paso = pasoActual(flow);
+  if (paso) {
+    // Pregunta sobre el aire («¿qué es el aire?», «what is air?»):
+    // se explica en lenguaje simple y se vuelve a preguntar, SIN
+    // perder el paso del flujo en el que íbamos.
+    const idiomaAire = preguntaSobreAire(textoCliente);
+    if (idiomaAire) {
+      db.setConversationFlow(conversacion.id, flow);
+      conversacion.flow = flow;
+      const partesAire = [];
+      if (nuevos.length) {
+        partesAire.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos)).join('; ')}.`);
+      }
+      partesAire.push(idiomaAire === 'en' ? EXPLICACION_AIRE_EN : EXPLICACION_AIRE_ES);
+      partesAire.push(
+        flow.datos.aire
+          ? preguntaPara(paso, flow.datos)
+          : idiomaAire === 'en'
+            ? 'Does your concrete need it with air or no air?'
+            : '¿Su concreto lo necesita con aire o no aire?'
+      );
+      return {
+        responder: true,
+        texto: partesAire.join('\n'),
+        intent: flow.tipo,
+        topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+        intentDetectado,
+      };
+    }
+  }
   if (!paso) {
     // Flujo completo: cierre al cliente + confirmación armada.
     const datos = flow.datos;
@@ -782,6 +852,26 @@ function decidirRespuesta(conversacion, textoCliente) {
     return manejarFlujo(conversacion, textoCliente, true, intent.id);
   }
 
+  // --- Pregunta sobre el aire SIN flujo en curso: se explica y se
+  // abre el flujo para que la respuesta («con aire»/«no aire») no se
+  // pierda y la conversación siga como una cotización.
+  const idiomaAireSuelto = intent.id !== 'humano' ? preguntaSobreAire(textoCliente) : null;
+  if (idiomaAireSuelto) {
+    conversacion.flow = { tipo: 'cotizacion', datos: datosVacios() };
+    db.setConversationFlow(conversacion.id, conversacion.flow);
+    return {
+      responder: true,
+      texto:
+        (idiomaAireSuelto === 'en' ? EXPLICACION_AIRE_EN : EXPLICACION_AIRE_ES) +
+        '\n' +
+        (idiomaAireSuelto === 'en'
+          ? 'Does your concrete need it with air or no air?'
+          : '¿Su concreto lo necesita con aire o no aire?'),
+      intent: 'aire',
+      topic: 'qué es el aire en el concreto',
+    };
+  }
+
   // --- Respuesta normal por intent (comportamiento de siempre).
   const texto = textoEfectivo(intent.id, conversacion.name);
   return { responder: true, texto, intent: intent.id, topic: intent.topic };
@@ -799,4 +889,5 @@ module.exports = {
   armarConfirmacion,
   fechaCortaEntrega,
   esPreguntaPrecio,
+  preguntaSobreAire,
 };
