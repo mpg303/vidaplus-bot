@@ -6,18 +6,22 @@
 // por yarda cúbica en Dallas–Fort Worth.
 //
 // FLUJO DE COTIZACIÓN/PEDIDO (proceso real del dueño):
-// cuando un cliente quiere cotizar u ordenar, el bot junta 4 datos
+// cuando un cliente quiere cotizar u ordenar, el bot junta los datos
 // EN ORDEN — 1) cuántas yardas, 2) qué mix, 3) la dirección,
 // 4) día y hora de la entrega — con estado por conversación
 // (conv.flow en db.js). En el paso del mix se pregunta también si
 // el concreto va «con aire o no aire» (regla del dueño): el paso
 // del mix no se completa hasta tener mix Y aire. Y AL FINAL, ya
-// con la orden completa y ANTES del cierre, el bot pide 5) el
-// nombre de la persona y el nombre de su compañía (si no tiene
-// compañía, queda «Particular»). Los datos que el cliente ya dio
-// no se vuelven a pedir, y las respuestas cortas a mitad del
-// flujo se interpretan como el dato que se está pidiendo
-// (jamás se responde el menú genérico a mitad del flujo).
+// con la orden completa y ANTES del cierre, el bot pide UNO POR
+// VEZ: 5) el nombre de la persona, 6) el nombre de su compañía
+// (si no tiene compañía, queda «Particular») y 7) la forma de pago
+// (Zelle, tarjeta de débito o tarjeta de crédito). Los datos que
+// el cliente ya dio no se vuelven a pedir, y las respuestas cortas
+// a mitad del flujo se interpretan como el dato que se está
+// pidiendo (jamás se responde el menú genérico a mitad del flujo).
+// En el cierre se aclara UNA sola vez que el pago es POR
+// ADELANTADO (regla del dueño): en cuanto se confirme el pago se
+// carga la orden; el bot todavía NO pide ni envía datos de cobro.
 // Al completar todos los datos, el bot:
 //   a) le responde al cliente un cierre corto con el resumen, y
 //   b) deja ARMADA en la conversación (la guarda el webhook como
@@ -315,8 +319,11 @@ function construirRespuesta(intentId, nombre) {
 // FLUJO DE COTIZACIÓN / PEDIDO — recolección de los 4 datos
 // ============================================================
 
-/** Orden exacto en que el dueño pide los datos (nombre/compañía al final). */
-const PASOS_FLUJO = ['yardas', 'mix', 'direccion', 'fecha', 'hora', 'cliente'];
+/**
+ * Orden exacto en que el dueño pide los datos. Al final van, UNO
+ * POR VEZ: el nombre, la compañía y la forma de pago.
+ */
+const PASOS_FLUJO = ['yardas', 'mix', 'direccion', 'fecha', 'hora', 'nombre', 'compania', 'pago'];
 
 function datosVacios() {
   return {
@@ -330,6 +337,7 @@ function datosVacios() {
     inspeccion: false,
     nombre: null, // nombre de la persona — se pide AL FINAL, con la orden completa
     compania: null, // nombre de su compañía, o «Particular» si no tiene
+    pago: null, // forma de pago: «Zelle» | «Tarjeta de débito» | «Tarjeta de crédito» | «Tarjeta»
   };
 }
 
@@ -339,8 +347,6 @@ function pasoActual(flow) {
     PASOS_FLUJO.find((p) => {
       // El paso del mix exige mix Y aire («aire o no aire»).
       if (p === 'mix') return !flow.datos.mix || !flow.datos.aire;
-      // El paso del cliente exige nombre Y compañía (o «Particular»).
-      if (p === 'cliente') return !flow.datos.nombre || !flow.datos.compania;
       return !flow.datos[p];
     }) || null
   );
@@ -406,12 +412,15 @@ function limpiarNombre(s) {
 }
 
 /**
- * Interpreta la respuesta al paso final del flujo: «¿A nombre de
- * quién queda la orden y cuál es el nombre de su compañía?».
- * Acepta marcadores («a nombre de X, compañía Y», «nombre: X,
- * empresa: Y»), el formato simple «Nombre, Compañía» y respuestas
- * de un solo dato. Si el cliente dice que no tiene compañía o es
- * particular, la compañía queda «Particular» (no se insiste).
+ * Interpreta la respuesta a los pasos FINALES de datos del cliente.
+ * El bot pregunta el nombre y la compañía UNO POR VEZ (primero
+ * «¿A nombre de quién queda la orden?» y después «¿Y cuál es el
+ * nombre de su compañía?»), pero esta interpretación acepta que el
+ * cliente dé los dos juntos en un mismo mensaje: acepta marcadores
+ * («a nombre de X, compañía Y», «nombre: X, empresa: Y»), el
+ * formato simple «Nombre, Compañía» y respuestas de un solo dato.
+ * Si el cliente dice que no tiene compañía o es particular, la
+ * compañía queda «Particular» (no se insiste).
  */
 function extraerNombreCompania(raw) {
   const out = {};
@@ -422,11 +431,11 @@ function extraerNombreCompania(raw) {
       normalizar(t)
     );
   const mNombre = t.match(/(?:a nombre de|mi nombre es|nombre)\s*[:\-]?\s*([^,;]+)/i);
-  const mComp = t.match(/(?:compan[ií]a|empresa|negocio|company)\s*(?:es|se llama)?\s*[:\-]?\s*(.+)$/i);
+  const mComp = t.match(/(?:compa[ñn][ií]a|empresa|negocio|company)\s*(?:es|se llama)?\s*[:\-]?\s*(.+)$/i);
   if (mComp && !esParticular) out.compania = limpiarNombre(mComp[1]);
   if (mNombre) {
     out.nombre = limpiarNombre(
-      mNombre[1].replace(/(?:compan[ií]a|empresa|negocio|company).*$/i, '')
+      mNombre[1].replace(/(?:compa[ñn][ií]a|empresa|negocio|company).*$/i, '')
     );
   }
   if (!out.nombre && !out.compania) {
@@ -435,7 +444,7 @@ function extraerNombreCompania(raw) {
       out.nombre = limpiarNombre(partes[0].replace(/^a nombre de\s*/i, ''));
       if (!esParticular) {
         out.compania = limpiarNombre(
-          partes.slice(1).join(', ').replace(/^(?:compan[ií]a|empresa|negocio)\s*(?:es|se llama)?\s*[:\-]?\s*/i, '')
+          partes.slice(1).join(', ').replace(/^(?:compa[ñn][ií]a|empresa|negocio)\s*(?:es|se llama)?\s*[:\-]?\s*/i, '')
         );
       }
     } else if (!esParticular) {
@@ -454,6 +463,26 @@ function extraerNombreCompania(raw) {
   if (out.nombre === '') delete out.nombre;
   if (out.compania === '') delete out.compania;
   return out;
+}
+
+/**
+ * Interpreta la respuesta al paso de la FORMA DE PAGO (el último
+ * del flujo): «¿Cómo va a pagar: Zelle, tarjeta de débito o tarjeta
+ * de crédito?». Devuelve el valor normalizado — «Zelle», «Tarjeta
+ * de débito» o «Tarjeta de crédito» —, o «Tarjeta» a secas si el
+ * cliente dijo solo «tarjeta»/«card» sin aclarar (el flujo le
+ * pregunta «¿Débito o crédito?» una sola vez), o null si no se
+ * entiende ninguna forma de pago.
+ */
+function extraerPago(raw) {
+  const t = normalizar(raw);
+  if (/\bzelle\b/.test(t)) return 'Zelle';
+  const debito = /\b(debito|debit)\b/.test(t);
+  const credito = /\b(credito|credit)\b/.test(t);
+  if (debito && !credito) return 'Tarjeta de débito';
+  if (credito && !debito) return 'Tarjeta de crédito';
+  if (/\b(tarjeta|card)\b/.test(t)) return 'Tarjeta';
+  return null;
 }
 
 /**
@@ -558,12 +587,25 @@ function extraerDatos(texto, paso) {
     d.direccion = raw.replace(/[. ]+$/, '');
   }
 
-  // --- Nombre y compañía (paso final, ya con la orden completa) ---
+  // --- Nombre y compañía (pasos finales, ya con la orden completa) ---
+  // Se piden UNO POR VEZ (primero el nombre, después la compañía),
+  // pero si el cliente da los dos juntos se capturan ambos y no se
+  // le vuelve a preguntar lo que ya dio.
   // Una pregunta de precio o sobre el aire jamás se toma como nombre.
-  if (paso === 'cliente' && !esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
+  if ((paso === 'nombre' || paso === 'compania') && !esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
     const cli = extraerNombreCompania(raw);
     if (cli.nombre) d.nombre = cli.nombre;
     if (cli.compania) d.compania = cli.compania;
+  }
+
+  // --- Forma de pago (último paso, después de la compañía) ---
+  // Si dice solo «tarjeta»/«card» sin aclarar, se marca genérica
+  // (d.pagoGenerica): el flujo pregunta «¿Débito o crédito?» una
+  // sola vez antes de guardarla como «Tarjeta».
+  if (paso === 'pago' && !esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
+    const pago = extraerPago(raw);
+    if (pago === 'Tarjeta') d.pagoGenerica = true;
+    else if (pago) d.pago = pago;
   }
 
   return d;
@@ -572,7 +614,7 @@ function extraerDatos(texto, paso) {
 /** Fusiona los datos detectados en el flujo y devuelve los campos nuevos. */
 function fusionarDatos(flow, d) {
   const nuevos = [];
-  for (const campo of ['yardas', 'mix', 'aire', 'direccion', 'fecha', 'hora', 'slump', 'nombre', 'compania']) {
+  for (const campo of ['yardas', 'mix', 'aire', 'direccion', 'fecha', 'hora', 'slump', 'nombre', 'compania', 'pago']) {
     if (d[campo] && !flow.datos[campo]) {
       flow.datos[campo] = d[campo];
       nuevos.push(campo);
@@ -607,6 +649,8 @@ function confirmacionDe(campo, datos) {
       return datos.compania === 'Particular'
         ? 'anotado: queda como *particular* (sin compañía)'
         : `anotada la compañía: *${datos.compania}*`;
+    case 'pago':
+      return `anotado el pago: *${datos.pago}*`;
     default:
       return 'anotado';
   }
@@ -686,14 +730,16 @@ function preguntaPara(paso, datos) {
         : '¿Para qué día lo necesita y a qué hora en la obra?';
     case 'hora':
       return '¿A qué hora lo necesita en la obra?';
-    case 'cliente':
-      // Paso final: nombre de la persona y de su compañía; si ya se
-      // tiene uno de los dos, se pregunta solo el que falta.
-      if (!datos.nombre && datos.compania) return '¿A nombre de quién queda la orden?';
-      if (datos.nombre && !datos.compania) {
-        return '¿Y cuál es el nombre de su compañía? Si no tiene compañía y es particular, dígamelo y así lo dejamos.';
-      }
-      return 'Ya casi terminamos 🙏 ¿A nombre de quién queda la orden y cuál es el nombre de su compañía?';
+    case 'nombre':
+      // Nombre y compañía se piden UNO POR VEZ (orden del dueño):
+      // primero solo el nombre…
+      return 'Ya casi terminamos 🙏 ¿A nombre de quién queda la orden?';
+    case 'compania':
+      // …y en cuanto da el nombre, solo la compañía.
+      return '¿Y cuál es el nombre de su compañía? Si no tiene compañía y es particular, dígamelo y así lo dejamos.';
+    case 'pago':
+      // Último dato: la forma de pago (sin pedir datos de cobro).
+      return '¿Cómo va a pagar: Zelle, tarjeta de débito o tarjeta de crédito?';
     default:
       return '';
   }
@@ -760,6 +806,7 @@ function fechaCortaEntrega(fechaTexto) {
  *   {hora} jobsite
  *   Slump {slump}{ (inspection) si pidió inspección}
  *   Order number
+ *   Pago: {forma de pago que eligió el cliente}
  * La línea de la planta se OMITE siempre (regla del dueño: el cliente
  * directo no debe saber de dónde carga el concreto) y la línea
  * «Order number» va sin número: Jesus lo completa a mano al apartar
@@ -784,6 +831,9 @@ function armarConfirmacion(datos, conversacion) {
     `Slump${datos.slump ? ` ${datos.slump}` : ''}${datos.inspeccion ? ' (inspection)' : ''}`,
     'Order number',
   ];
+  // Al final va la forma de pago que eligió el cliente (línea
+  // nueva; las líneas del formato del dueño no cambian).
+  if (datos.pago) lineas.push(`Pago: ${datos.pago}`);
   return lineas.join('\n');
 }
 
@@ -795,9 +845,14 @@ function resumenCliente(datos, nombre) {
     `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
     `• Mix: ${datos.mix}${datos.aire ? `, ${datos.aire}` : ''}\n` +
     `• Dirección: ${datos.direccion}\n` +
-    `• Día: ${datos.fecha} — ${datos.hora}\n\n` +
-    `Le confirmamos precio y disponibilidad en seguida. ` +
-    `Un especialista le atiende por aquí mismo. 🙏`
+    `• Día: ${datos.fecha} — ${datos.hora}\n` +
+    (datos.pago ? `• Pago: ${datos.pago}\n` : '') +
+    `\nLe confirmamos precio y disponibilidad en seguida. ` +
+    `Un especialista le atiende por aquí mismo. 🙏\n` +
+    // Regla del dueño: el pago es POR ADELANTADO. Se avisa UNA
+    // sola vez, aquí en el cierre (no en la pregunta del pago);
+    // el bot todavía no pide ni envía datos de cobro.
+    `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛`
   );
 }
 
@@ -809,8 +864,23 @@ function resumenCliente(datos, nombre) {
  */
 function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const flow = conversacion.flow;
-  const detectados = extraerDatos(textoCliente, pasoActual(flow));
+  const pasoPedido = pasoActual(flow);
+  const detectados = extraerDatos(textoCliente, pasoPedido);
   const nuevos = fusionarDatos(flow, detectados);
+
+  // Forma de pago genérica («tarjeta» sin decir débito o crédito):
+  // se pregunta «¿Débito o crédito?» UNA sola vez; si el cliente
+  // insiste sin aclarar, se guarda «Tarjeta» y el flujo sigue.
+  let preguntaAclararPago = false;
+  if (pasoPedido === 'pago' && detectados.pagoGenerica && !flow.datos.pago) {
+    if (flow.pagoAclaracionPedida) {
+      flow.datos.pago = 'Tarjeta';
+      nuevos.push('pago');
+    } else {
+      flow.pagoAclaracionPedida = true;
+      preguntaAclararPago = true;
+    }
+  }
 
   const paso = pasoActual(flow);
   if (paso) {
@@ -877,7 +947,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   if (esPreguntaPrecio(textoCliente)) {
     partes.push(LINEA_PRECIO);
   }
-  partes.push(preguntaPara(paso, flow.datos));
+  partes.push(preguntaAclararPago ? '¿Débito o crédito?' : preguntaPara(paso, flow.datos));
 
   return {
     responder: true,
