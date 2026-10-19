@@ -9,10 +9,12 @@
 // cuando un cliente quiere cotizar u ordenar, el bot junta 4 datos
 // EN ORDEN — 1) cuántas yardas, 2) qué mix, 3) la dirección,
 // 4) día y hora de la entrega — con estado por conversación
-// (conv.flow en db.js). Los datos que el cliente ya dio no se
-// vuelven a pedir, y las respuestas cortas a mitad del flujo se
-// interpretan como el dato que se está pidiendo (jamás se
-// responde el menú genérico a mitad del flujo).
+// (conv.flow en db.js). En el paso del mix se pregunta también si
+// el concreto va «con aire o no aire» (regla del dueño): el paso
+// del mix no se completa hasta tener mix Y aire. Los datos que el
+// cliente ya dio no se vuelven a pedir, y las respuestas cortas a
+// mitad del flujo se interpretan como el dato que se está pidiendo
+// (jamás se responde el menú genérico a mitad del flujo).
 // Al completar los 4 datos, el bot:
 //   a) le responde al cliente un cierre corto con el resumen, y
 //   b) deja ARMADA en la conversación (la guarda el webhook como
@@ -304,6 +306,7 @@ function datosVacios() {
   return {
     yardas: null, // { cantidad: '10', plus: false }
     mix: null,
+    aire: null, // 'con aire' | 'no aire' — se pide junto con el mix
     direccion: null,
     fecha: null, // texto tal como lo dio el cliente («mañana», «10/20/26»…)
     hora: null, // texto tal como lo dio el cliente («7 am», «10:00 pm»…)
@@ -314,7 +317,13 @@ function datosVacios() {
 
 /** Primer dato que falta según el orden del flujo (null si está completo). */
 function pasoActual(flow) {
-  return PASOS_FLUJO.find((p) => !flow.datos[p]) || null;
+  return (
+    PASOS_FLUJO.find((p) => {
+      // El paso del mix exige mix Y aire («aire o no aire»).
+      if (p === 'mix') return !flow.datos.mix || !flow.datos.aire;
+      return !flow.datos[p];
+    }) || null
+  );
 }
 
 /**
@@ -341,6 +350,34 @@ function pareceDireccion(raw) {
     /\d+\s+\S+.*\b(st|street|ave|avenue|dr|drive|blvd|ln|lane|rd|road|hwy|fwy|ct|court|way|trl|trail)\b/i.test(raw) ||
     (/\b\d{5}\b/.test(raw) && /\d+\s+[A-Za-zÁÉÍÓÚÑáéíóúñ]/.test(raw))
   );
+}
+
+/**
+ * Detecta si el cliente dijo que el concreto va con aire o sin aire.
+ * Devuelve 'con aire', 'no aire' o null. Las formas negativas mandan
+ * («sin aire», «no aire», «no lleva aire», «non air», «no air»…).
+ */
+function extraerAire(raw) {
+  if (
+    /\b(sin aire|no aire|no lleva aire|sin entrained air|non[-\s]?air|no air)\b/i.test(raw)
+  ) {
+    return 'no aire';
+  }
+  if (/\b(con aire|lleva aire|air[-\s]?entrained)\b/i.test(raw) || /\baire\b/i.test(raw) || /\bair\b/i.test(raw)) {
+    return 'con aire';
+  }
+  return null;
+}
+
+/** Quita las frases de aire de un texto (para que no queden dentro del mix). */
+function quitarFrasesAire(texto) {
+  return (texto || '')
+    .replace(/\b(sin aire|no aire|no lleva aire|con aire|lleva aire|non[-\s]?air|no air|air[-\s]?entrained)\b/gi, ' ')
+    .replace(/\baire\b/gi, ' ')
+    .replace(/\bair\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[\s,;./-]+|[\s,;./-]+$/g, '')
+    .trim();
 }
 
 /**
@@ -395,17 +432,23 @@ function extraerDatos(texto, paso) {
 
   const esDireccion = pareceDireccion(raw);
 
+  // --- Aire (va junto con el mix: «aire o no aire») ---
+  const aire = extraerAire(raw);
+  if (aire) d.aire = aire;
+
   // --- Mix ---
   const mPsi = raw.match(/(\d{3,5})\s*psi\b/i);
   if (mPsi) {
     d.mix = `${mPsi[1]} psi`;
   } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora) {
     // En el paso del mix, todo el mensaje ES la descripción del mix
-    // (ej. «High early mix / mix 275-P»), tal como la dio el cliente.
-    d.mix = raw.replace(/[. ]+$/, '');
+    // (ej. «High early mix / mix 275-P»), tal como la dio el cliente,
+    // sin la frase del aire (ese dato va aparte).
+    const mixTexto = quitarFrasesAire(raw);
+    if (mixTexto) d.mix = mixTexto.replace(/[. ]+$/, '');
   } else {
     const mMix = raw.match(/\b(?:mix|mezcla)\b[^,.;]*/i);
-    if (mMix) d.mix = mMix[0].trim().replace(/[. ]+$/, '');
+    if (mMix) d.mix = quitarFrasesAire(mMix[0]).replace(/[. ]+$/, '');
   }
 
   // --- Dirección ---
@@ -430,7 +473,7 @@ function extraerDatos(texto, paso) {
 /** Fusiona los datos detectados en el flujo y devuelve los campos nuevos. */
 function fusionarDatos(flow, d) {
   const nuevos = [];
-  for (const campo of ['yardas', 'mix', 'direccion', 'fecha', 'hora', 'slump']) {
+  for (const campo of ['yardas', 'mix', 'aire', 'direccion', 'fecha', 'hora', 'slump']) {
     if (d[campo] && !flow.datos[campo]) {
       flow.datos[campo] = d[campo];
       nuevos.push(campo);
@@ -449,6 +492,8 @@ function confirmacionDe(campo, datos) {
       return `anotadas las *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
     case 'mix':
       return `anotado el mix: *${datos.mix}*`;
+    case 'aire':
+      return `anotado: concreto *${datos.aire}*`;
     case 'direccion':
       return `anotada la *dirección*`;
     case 'fecha':
@@ -468,7 +513,11 @@ function preguntaPara(paso, datos) {
     case 'yardas':
       return '¿Cuántas yardas necesita?';
     case 'mix':
-      return '¿Qué mix o resistencia (PSI) necesita?';
+      // Con el mix se pregunta también el aire («aire o no aire»);
+      // si el mix ya está y solo falta el aire, se pregunta solo eso.
+      return datos.mix
+        ? '¿Y el concreto va con aire o no aire?'
+        : '¿Qué mix o resistencia (PSI) necesita? ¿Y el concreto va con aire o no aire?';
     case 'direccion':
       return '¿Cuál es la dirección completa de la obra?';
     case 'fecha':
@@ -540,7 +589,7 @@ function fechaCortaEntrega(fechaTexto) {
  * del dueño (texto plano, una línea por dato, en este orden):
  *   {fecha M/D/AA} {nombre del cliente}
  *   {cantidad} yds{ plus si aplica}
- *   {mix tal como lo dio el cliente}
+ *   {mix tal como lo dio el cliente}{ con aire|no aire}
  *   {dirección completa}
  *   {hora} jobsite
  *   Slump {slump}{ (inspection) si pidió inspección}
@@ -559,7 +608,7 @@ function armarConfirmacion(datos, conversacion) {
   const lineas = [
     `${fechaCortaEntrega(datos.fecha)} ${nombreCliente}`,
     `${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}`,
-    `${datos.mix}`,
+    `${datos.mix}${datos.aire ? ` ${datos.aire}` : ''}`,
     `${datos.direccion}`,
     `${datos.hora} jobsite`,
     `Slump${datos.slump ? ` ${datos.slump}` : ''}${datos.inspeccion ? ' (inspection)' : ''}`,
@@ -574,7 +623,7 @@ function resumenCliente(datos, nombre) {
   return (
     `¡Listo${n}! ✅ Ya quedó registrada su orden:\n` +
     `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
-    `• Mix: ${datos.mix}\n` +
+    `• Mix: ${datos.mix}${datos.aire ? `, ${datos.aire}` : ''}\n` +
     `• Dirección: ${datos.direccion}\n` +
     `• Día: ${datos.fecha} — ${datos.hora}\n\n` +
     `Le confirmamos precio y disponibilidad en seguida. ` +
