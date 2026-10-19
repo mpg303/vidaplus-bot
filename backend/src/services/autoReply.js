@@ -25,6 +25,14 @@
 //      el concreto); solo aparecería si Jesus la agrega a mano.
 // El slump se captura SOLO si el cliente lo menciona (no es una
 // quinta pregunta obligatoria).
+// PRECIO (regla del dueño): el bot NUNCA da ni inventa precios —
+// el precio sale de la cotización de la planta. Si el cliente
+// pregunta el precio («¿cuánto?», «cuánto cuesta», «precio»,
+// «how much»…) en cualquier momento — antes del flujo, a mitad o
+// al final — se le responde en corto que el precio depende de la
+// planta y del mix y que con los datos de su orden se lo confirman
+// enseguida, y el flujo CONTINÚA donde iba (si no había empezado,
+// arranca pidiendo las yardas).
 // ============================================================
 const { NEGOCIO, avisoApertura } = require('../config');
 const db = require('../db');
@@ -425,8 +433,9 @@ function extraerDatos(texto, paso) {
     raw.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo/i);
   if (mFecha) {
     d.fecha = mFecha[0].trim();
-  } else if (paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw)) {
-    // Respuesta corta al «¿para qué día?»: se toma tal cual.
+  } else if (paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw) && !esPreguntaPrecio(raw)) {
+    // Respuesta corta al «¿para qué día?»: se toma tal cual
+    // (una pregunta de precio jamás se toma como fecha).
     d.fecha = raw.replace(/[. ]+$/, '');
   }
 
@@ -443,8 +452,9 @@ function extraerDatos(texto, paso) {
   } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora) {
     // En el paso del mix, todo el mensaje ES la descripción del mix
     // (ej. «High early mix / mix 275-P»), tal como la dio el cliente,
-    // sin la frase del aire (ese dato va aparte).
-    const mixTexto = quitarFrasesAire(raw);
+    // sin la frase del aire (ese dato va aparte). Una pregunta de
+    // precio («¿cuánto sale?») NO es un mix: no se captura.
+    const mixTexto = esPreguntaPrecio(raw) ? '' : quitarFrasesAire(raw);
     if (mixTexto) d.mix = mixTexto.replace(/[. ]+$/, '');
   } else {
     const mMix = raw.match(/\b(?:mix|mezcla)\b[^,.;]*/i);
@@ -460,10 +470,12 @@ function extraerDatos(texto, paso) {
     !d.mix &&
     !d.yardas &&
     !d.fecha &&
-    !d.hora
+    !d.hora &&
+    !esPreguntaPrecio(raw)
   ) {
     // Respuesta corta al «¿cuál es la dirección?»: se toma tal cual
     // (conserva saltos de línea, ej. la línea «Estados Unidos»).
+    // Una pregunta de precio jamás se toma como dirección.
     d.direccion = raw.replace(/[. ]+$/, '');
   }
 
@@ -506,6 +518,23 @@ function confirmacionDe(campo, datos) {
       return 'anotado';
   }
 }
+
+/**
+ * ¿El cliente está preguntando el PRECIO? Para el dueño, el
+ * «¿cuánto?» del cliente siempre es el precio. Se excluyen las
+ * preguntas de duración («cuánto tarda/tiempo/demora…»).
+ */
+function esPreguntaPrecio(texto) {
+  const t = normalizar(texto);
+  if (/\bhow much\b/.test(t)) return true;
+  if (/\bprecio(s)?\b/.test(t) || /\bcosto\b/.test(t) || /\btarifa\b/.test(t)) return true;
+  if (/\bcuanto\b/.test(t) && !/\bcuanto\s+(tiempo|tarda|tardan|demora|dura|duran)\b/.test(t)) return true;
+  return false;
+}
+
+/** Respuesta corta sobre el precio: jamás se da un número. */
+const LINEA_PRECIO =
+  'El precio depende de la planta y del mix 🏗️ Con los datos de su orden se lo confirmamos enseguida.';
 
 /** La pregunta por el dato que falta, en el orden del dueño. */
 function preguntaPara(paso, datos) {
@@ -673,6 +702,11 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   } else if (!esNuevo) {
     partes.push(`Sigamos con ${flow.tipo === 'pedido' ? 'su pedido' : 'su cotización'} 🏗️`);
   }
+  // Pregunta de precio a mitad del flujo (o al abrirlo): respuesta
+  // corta SIN números, y el flujo continúa donde iba.
+  if (esPreguntaPrecio(textoCliente)) {
+    partes.push(LINEA_PRECIO);
+  }
   partes.push(preguntaPara(paso, flow.datos));
 
   return {
@@ -687,6 +721,9 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
 /** ¿El mensaje abre el flujo? (intent de cotización/pedido o datos ya dados). */
 function abreFlujo(intent, textoCliente) {
   if (intent.id === 'cotizacion' || intent.id === 'pedido') return true;
+  // Una pregunta de precio («¿cuánto?», «how much»…) abre el flujo:
+  // se responde la línea de precio y se arranca pidiendo las yardas.
+  if (esPreguntaPrecio(textoCliente)) return true;
   const d = extraerDatos(textoCliente, null);
   if (d.yardas) return true;
   const t = normalizar(textoCliente);
@@ -761,4 +798,5 @@ module.exports = {
   extraerDatos,
   armarConfirmacion,
   fechaCortaEntrega,
+  esPreguntaPrecio,
 };
