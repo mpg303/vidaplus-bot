@@ -11,11 +11,14 @@
 // 4) día y hora de la entrega — con estado por conversación
 // (conv.flow en db.js). En el paso del mix se pregunta también si
 // el concreto va «con aire o no aire» (regla del dueño): el paso
-// del mix no se completa hasta tener mix Y aire. Los datos que el
-// cliente ya dio no se vuelven a pedir, y las respuestas cortas a
-// mitad del flujo se interpretan como el dato que se está pidiendo
+// del mix no se completa hasta tener mix Y aire. Y AL FINAL, ya
+// con la orden completa y ANTES del cierre, el bot pide 5) el
+// nombre de la persona y el nombre de su compañía (si no tiene
+// compañía, queda «Particular»). Los datos que el cliente ya dio
+// no se vuelven a pedir, y las respuestas cortas a mitad del
+// flujo se interpretan como el dato que se está pidiendo
 // (jamás se responde el menú genérico a mitad del flujo).
-// Al completar los 4 datos, el bot:
+// Al completar todos los datos, el bot:
 //   a) le responde al cliente un cierre corto con el resumen, y
 //   b) deja ARMADA en la conversación (la guarda el webhook como
 //      mensaje del BOT) la confirmación con el formato exacto del
@@ -307,8 +310,8 @@ function construirRespuesta(intentId, nombre) {
 // FLUJO DE COTIZACIÓN / PEDIDO — recolección de los 4 datos
 // ============================================================
 
-/** Orden exacto en que el dueño pide los datos. */
-const PASOS_FLUJO = ['yardas', 'mix', 'direccion', 'fecha', 'hora'];
+/** Orden exacto en que el dueño pide los datos (nombre/compañía al final). */
+const PASOS_FLUJO = ['yardas', 'mix', 'direccion', 'fecha', 'hora', 'cliente'];
 
 function datosVacios() {
   return {
@@ -320,6 +323,8 @@ function datosVacios() {
     hora: null, // texto tal como lo dio el cliente («7 am», «10:00 pm»…)
     slump: null,
     inspeccion: false,
+    nombre: null, // nombre de la persona — se pide AL FINAL, con la orden completa
+    compania: null, // nombre de su compañía, o «Particular» si no tiene
   };
 }
 
@@ -329,6 +334,8 @@ function pasoActual(flow) {
     PASOS_FLUJO.find((p) => {
       // El paso del mix exige mix Y aire («aire o no aire»).
       if (p === 'mix') return !flow.datos.mix || !flow.datos.aire;
+      // El paso del cliente exige nombre Y compañía (o «Particular»).
+      if (p === 'cliente') return !flow.datos.nombre || !flow.datos.compania;
       return !flow.datos[p];
     }) || null
   );
@@ -386,6 +393,62 @@ function quitarFrasesAire(texto) {
     .replace(/\s{2,}/g, ' ')
     .replace(/^[\s,;./-]+|[\s,;./-]+$/g, '')
     .trim();
+}
+
+/** Limpia un nombre/compañía capturado (espacios y punto final). */
+function limpiarNombre(s) {
+  return (s || '').replace(/\s{2,}/g, ' ').replace(/[. ]+$/, '').trim();
+}
+
+/**
+ * Interpreta la respuesta al paso final del flujo: «¿A nombre de
+ * quién queda la orden y cuál es el nombre de su compañía?».
+ * Acepta marcadores («a nombre de X, compañía Y», «nombre: X,
+ * empresa: Y»), el formato simple «Nombre, Compañía» y respuestas
+ * de un solo dato. Si el cliente dice que no tiene compañía o es
+ * particular, la compañía queda «Particular» (no se insiste).
+ */
+function extraerNombreCompania(raw) {
+  const out = {};
+  const t = (raw || '').trim();
+  if (!t) return out;
+  const esParticular =
+    /\b(particular|no tengo compan\w*|sin compan\w*|no tengo empresa|no es empresa|es personal|solo yo|soy yo mismo)\b/i.test(
+      normalizar(t)
+    );
+  const mNombre = t.match(/(?:a nombre de|mi nombre es|nombre)\s*[:\-]?\s*([^,;]+)/i);
+  const mComp = t.match(/(?:compan[ií]a|empresa|negocio|company)\s*(?:es|se llama)?\s*[:\-]?\s*(.+)$/i);
+  if (mComp && !esParticular) out.compania = limpiarNombre(mComp[1]);
+  if (mNombre) {
+    out.nombre = limpiarNombre(
+      mNombre[1].replace(/(?:compan[ií]a|empresa|negocio|company).*$/i, '')
+    );
+  }
+  if (!out.nombre && !out.compania) {
+    const partes = t.split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+    if (partes.length >= 2) {
+      out.nombre = limpiarNombre(partes[0].replace(/^a nombre de\s*/i, ''));
+      if (!esParticular) {
+        out.compania = limpiarNombre(
+          partes.slice(1).join(', ').replace(/^(?:compan[ií]a|empresa|negocio)\s*(?:es|se llama)?\s*[:\-]?\s*/i, '')
+        );
+      }
+    } else if (!esParticular) {
+      // Un solo dato: si suena a empresa es la compañía; si no, el nombre.
+      const limpio = limpiarNombre(t.replace(/^a nombre de\s*/i, ''));
+      if (limpio) {
+        if (/\b(concrete|construction|constru\w+|llc|inc\.?|corp|company|grupo|services|servicios)\b/i.test(limpio)) {
+          out.compania = limpio;
+        } else {
+          out.nombre = limpio;
+        }
+      }
+    }
+  }
+  if (esParticular) out.compania = 'Particular';
+  if (out.nombre === '') delete out.nombre;
+  if (out.compania === '') delete out.compania;
+  return out;
 }
 
 /**
@@ -484,13 +547,21 @@ function extraerDatos(texto, paso) {
     d.direccion = raw.replace(/[. ]+$/, '');
   }
 
+  // --- Nombre y compañía (paso final, ya con la orden completa) ---
+  // Una pregunta de precio o sobre el aire jamás se toma como nombre.
+  if (paso === 'cliente' && !esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
+    const cli = extraerNombreCompania(raw);
+    if (cli.nombre) d.nombre = cli.nombre;
+    if (cli.compania) d.compania = cli.compania;
+  }
+
   return d;
 }
 
 /** Fusiona los datos detectados en el flujo y devuelve los campos nuevos. */
 function fusionarDatos(flow, d) {
   const nuevos = [];
-  for (const campo of ['yardas', 'mix', 'aire', 'direccion', 'fecha', 'hora', 'slump']) {
+  for (const campo of ['yardas', 'mix', 'aire', 'direccion', 'fecha', 'hora', 'slump', 'nombre', 'compania']) {
     if (d[campo] && !flow.datos[campo]) {
       flow.datos[campo] = d[campo];
       nuevos.push(campo);
@@ -519,6 +590,12 @@ function confirmacionDe(campo, datos) {
       return `anotada la hora: *${datos.hora}*`;
     case 'slump':
       return `anotado el slump: *${datos.slump}*`;
+    case 'nombre':
+      return `anotado el nombre: *${datos.nombre}*`;
+    case 'compania':
+      return datos.compania === 'Particular'
+        ? 'anotado: queda como *particular* (sin compañía)'
+        : `anotada la compañía: *${datos.compania}*`;
     default:
       return 'anotado';
   }
@@ -598,6 +675,14 @@ function preguntaPara(paso, datos) {
         : '¿Para qué día lo necesita y a qué hora en la obra?';
     case 'hora':
       return '¿A qué hora lo necesita en la obra?';
+    case 'cliente':
+      // Paso final: nombre de la persona y de su compañía; si ya se
+      // tiene uno de los dos, se pregunta solo el que falta.
+      if (!datos.nombre && datos.compania) return '¿A nombre de quién queda la orden?';
+      if (datos.nombre && !datos.compania) {
+        return '¿Y cuál es el nombre de su compañía? Si no tiene compañía y es particular, dígamelo y así lo dejamos.';
+      }
+      return 'Ya casi terminamos 🙏 ¿A nombre de quién queda la orden y cuál es el nombre de su compañía?';
     default:
       return '';
   }
@@ -657,7 +742,7 @@ function fechaCortaEntrega(fechaTexto) {
 /**
  * Arma el texto de CONFIRMACIÓN PARA EL CLIENTE con el formato exacto
  * del dueño (texto plano, una línea por dato, en este orden):
- *   {fecha M/D/AA} {nombre del cliente}
+ *   {fecha M/D/AA} {nombre de la orden}{ / compañía, si la dio}
  *   {cantidad} yds{ plus si aplica}
  *   {mix tal como lo dio el cliente}{ con aire|no aire}
  *   {dirección completa}
@@ -671,12 +756,16 @@ function fechaCortaEntrega(fechaTexto) {
  * El bot NO la envía solo: la deja guardada en la conversación.
  */
 function armarConfirmacion(datos, conversacion) {
+  // Primera línea: fecha + nombre de la orden + compañía. El nombre
+  // manda el que el cliente dio para la orden (paso final del flujo);
+  // si no lo dio, se cae al nombre de WhatsApp, como antes.
   const nombreCliente =
-    conversacion.name && conversacion.name !== conversacion.waId
+    datos.nombre ||
+    (conversacion.name && conversacion.name !== conversacion.waId
       ? conversacion.name
-      : conversacion.waId;
+      : conversacion.waId);
   const lineas = [
-    `${fechaCortaEntrega(datos.fecha)} ${nombreCliente}`,
+    `${fechaCortaEntrega(datos.fecha)} ${nombreCliente}${datos.compania ? ` / ${datos.compania}` : ''}`,
     `${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}`,
     `${datos.mix}${datos.aire ? ` ${datos.aire}` : ''}`,
     `${datos.direccion}`,
@@ -750,7 +839,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     conversacion.flow = null;
     return {
       responder: true,
-      texto: resumenCliente(datos, conversacion.name),
+      texto: resumenCliente(datos, datos.nombre || conversacion.name),
       intent: flow.tipo,
       topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
       confirmacionArmada,
