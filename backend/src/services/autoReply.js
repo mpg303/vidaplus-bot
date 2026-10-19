@@ -4,6 +4,25 @@
 // reales del negocio definidos en config.js (NEGOCIO).
 // Negocio: JMP Concrete and Dispatch LLC — venta de concreto
 // por yarda cúbica en Dallas–Fort Worth.
+//
+// FLUJO DE COTIZACIÓN/PEDIDO (proceso real del dueño):
+// cuando un cliente quiere cotizar u ordenar, el bot junta 4 datos
+// EN ORDEN — 1) cuántas yardas, 2) qué mix, 3) la dirección,
+// 4) día y hora de la entrega — con estado por conversación
+// (conv.flow en db.js). Los datos que el cliente ya dio no se
+// vuelven a pedir, y las respuestas cortas a mitad del flujo se
+// interpretan como el dato que se está pidiendo (jamás se
+// responde el menú genérico a mitad del flujo).
+// Al completar los 4 datos, el bot:
+//   a) le responde al cliente un cierre corto con el resumen, y
+//   b) deja ARMADA en la conversación (la guarda el webhook como
+//      mensaje del BOT) la confirmación con el formato exacto del
+//      dueño, lista para enviársela al cliente; Jesus completa a
+//      mano el número de orden. La planta NO se incluye (regla
+//      del dueño: el cliente directo no debe saber de dónde carga
+//      el concreto); solo aparecería si Jesus la agrega a mano.
+// El slump se captura SOLO si el cliente lo menciona (no es una
+// quinta pregunta obligatoria).
 // ============================================================
 const { NEGOCIO, avisoApertura } = require('../config');
 const db = require('../db');
@@ -27,6 +46,7 @@ const INTENTS = [
       'hablar con alguien', 'quiero hablar', 'una persona', 'humano',
       'agente', 'asesor', 'operador', 'alguien que me atienda',
       'me atienda alguien', 'persona real', 'jesus', 'morillo',
+      'especialista',
     ],
   },
   {
@@ -45,8 +65,8 @@ const INTENTS = [
     topic: 'hacer un pedido',
     keywords: [
       'pedido', 'pedir', 'ordenar', 'quiero concreto', 'quiero yardas',
-      'necesito concreto', 'agendar entrega', 'programar', 'apartar',
-      'quiero comprar', 'me manda', 'envieme',
+      'necesito concreto', 'necesito yardas', 'agendar entrega',
+      'programar', 'apartar', 'quiero comprar', 'me manda', 'envieme',
     ],
   },
   {
@@ -107,6 +127,8 @@ const INTENTS = [
     keywords: [
       'hola', 'buenas', 'buenos dias', 'buenas tardes',
       'buenas noches', 'hey', 'saludos', 'que tal', 'qué tal',
+      'hello', 'hi', 'good morning', 'good afternoon',
+      'good evening', 'buen dia', 'buen día',
     ],
   },
 ];
@@ -259,12 +281,370 @@ function construirRespuesta(intentId, nombre) {
         `Aquí estamos cuando necesite concreto.`
       );
     default:
+      // Fallback «no entendí» (fuera del flujo): español correcto, sin
+      // la frase enredada anterior; ofrece repetir o pasar a un humano.
       return (
-        `Gracias por escribir a *${C.nombre}* 🏗️.\n` +
-        `¿En qué le ayudamos? Puede pedir una *cotización*, hacer un *pedido*, ` +
-        `preguntar por una *entrega* o un *pago*.`
+        `Disculpe, no le entendí bien 🙏\n` +
+        `¿Me lo puede repetir, por favor? También puede pedirme una ` +
+        `*cotización*, hacer un *pedido*, preguntar por una *entrega* ` +
+        `o un *pago*.\n` +
+        `Y si prefiere, escriba *especialista* y le atiende una persona enseguida.`
       );
   }
+}
+
+// ============================================================
+// FLUJO DE COTIZACIÓN / PEDIDO — recolección de los 4 datos
+// ============================================================
+
+/** Orden exacto en que el dueño pide los datos. */
+const PASOS_FLUJO = ['yardas', 'mix', 'direccion', 'fecha', 'hora'];
+
+function datosVacios() {
+  return {
+    yardas: null, // { cantidad: '10', plus: false }
+    mix: null,
+    direccion: null,
+    fecha: null, // texto tal como lo dio el cliente («mañana», «10/20/26»…)
+    hora: null, // texto tal como lo dio el cliente («7 am», «10:00 pm»…)
+    slump: null,
+    inspeccion: false,
+  };
+}
+
+/** Primer dato que falta según el orden del flujo (null si está completo). */
+function pasoActual(flow) {
+  return PASOS_FLUJO.find((p) => !flow.datos[p]) || null;
+}
+
+/**
+ * Captura la dirección dentro de un mensaje más largo: busca el número
+ * de la calle seguido (en pocas palabras) por el tipo de vía y toma
+ * hasta el ZIP, recortando la fecha/hora si venían en el mismo mensaje.
+ * Devuelve null si no encuentra una dirección clara.
+ */
+function capturarDireccion(raw) {
+  const m = raw.match(
+    /(\d+\s+(?:(?:[A-Za-zÁÉÍÓÚÑáéíóúñ.'-]+|\d+(?:st|nd|rd|th))\s+){0,4}?(?:st|street|ave|avenue|dr|drive|blvd|ln|lane|rd|road|hwy|fwy|ct|court|way|trl|trail)\b[^,;]*)/i
+  );
+  if (!m) return null;
+  let dir = m[1];
+  dir = dir.replace(/\s+(pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo)\b[\s\S]*$/i, '');
+  dir = dir.replace(/\s+a las\s+\d[\s\S]*$/i, '');
+  dir = dir.replace(/\s+\d{1,2}(?::\d{2})?\s*(?:a\.?\s?m\.?|p\.?\s?m\.?)[\s\S]*$/i, '');
+  return dir.trim().replace(/[. ]+$/, '');
+}
+
+/** ¿Parece una dirección de obra? (número + tipo de vía, o ZIP con número). */
+function pareceDireccion(raw) {
+  return (
+    /\d+\s+\S+.*\b(st|street|ave|avenue|dr|drive|blvd|ln|lane|rd|road|hwy|fwy|ct|court|way|trl|trail)\b/i.test(raw) ||
+    (/\b\d{5}\b/.test(raw) && /\d+\s+[A-Za-zÁÉÍÓÚÑáéíóúñ]/.test(raw))
+  );
+}
+
+/**
+ * Extrae del mensaje del cliente los datos de la orden que vengan
+ * escritos. `paso` es el dato que el bot está pidiendo (si hay flujo):
+ * las respuestas cortas se interpretan como ese dato.
+ * Devuelve un objeto parcial con solo lo detectado.
+ */
+function extraerDatos(texto, paso) {
+  const raw = (texto || '').trim();
+  const d = {};
+  if (!raw) return d;
+
+  // --- Yardas (+ plus) ---
+  const mYds = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:yds?|yardas?)\b/i);
+  if (mYds) {
+    d.yardas = {
+      cantidad: mYds[1].replace(',', '.'),
+      plus: /\bplus\b/i.test(raw) || raw.includes('+'),
+    };
+  } else if (paso === 'yardas') {
+    const mNum = raw.match(/^[^0-9]*(\d+(?:[.,]\d+)?)[^0-9]*$/);
+    if (mNum) {
+      d.yardas = { cantidad: mNum[1].replace(',', '.'), plus: /\bplus\b/i.test(raw) };
+    }
+  }
+
+  // --- Slump e inspección (transversales: solo si el cliente los menciona) ---
+  const mSlump =
+    raw.match(/slump\D{0,4}(\d+(?:[.,]\d+)?)/i) ||
+    raw.match(/(\d+(?:[.,]\d+)?)\s*(?:de\s+)?slump/i);
+  if (mSlump) d.slump = mSlump[1].replace(',', '.');
+  if (/\binspecci[oó]n\b|\binspection\b/i.test(raw)) d.inspeccion = true;
+
+  // --- Hora ---
+  const mHora =
+    raw.match(/(\d{1,2}(?::\d{2})?\s*(?:a\.?\s?m\.?|p\.?\s?m\.?))/i) ||
+    raw.match(/a las\s+(\d{1,2}(?::\d{2})?)/i);
+  if (mHora) d.hora = mHora[1].trim();
+
+  // --- Fecha (día de la entrega) ---
+  const mFecha =
+    raw.match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/) ||
+    raw.match(/\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i) ||
+    raw.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo/i);
+  if (mFecha) {
+    d.fecha = mFecha[0].trim();
+  } else if (paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw)) {
+    // Respuesta corta al «¿para qué día?»: se toma tal cual.
+    d.fecha = raw.replace(/[. ]+$/, '');
+  }
+
+  const esDireccion = pareceDireccion(raw);
+
+  // --- Mix ---
+  const mPsi = raw.match(/(\d{3,5})\s*psi\b/i);
+  if (mPsi) {
+    d.mix = `${mPsi[1]} psi`;
+  } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora) {
+    // En el paso del mix, todo el mensaje ES la descripción del mix
+    // (ej. «High early mix / mix 275-P»), tal como la dio el cliente.
+    d.mix = raw.replace(/[. ]+$/, '');
+  } else {
+    const mMix = raw.match(/\b(?:mix|mezcla)\b[^,.;]*/i);
+    if (mMix) d.mix = mMix[0].trim().replace(/[. ]+$/, '');
+  }
+
+  // --- Dirección ---
+  if (esDireccion) {
+    const dir = capturarDireccion(raw);
+    if (dir) d.direccion = dir;
+  } else if (
+    paso === 'direccion' &&
+    !d.mix &&
+    !d.yardas &&
+    !d.fecha &&
+    !d.hora
+  ) {
+    // Respuesta corta al «¿cuál es la dirección?»: se toma tal cual
+    // (conserva saltos de línea, ej. la línea «Estados Unidos»).
+    d.direccion = raw.replace(/[. ]+$/, '');
+  }
+
+  return d;
+}
+
+/** Fusiona los datos detectados en el flujo y devuelve los campos nuevos. */
+function fusionarDatos(flow, d) {
+  const nuevos = [];
+  for (const campo of ['yardas', 'mix', 'direccion', 'fecha', 'hora', 'slump']) {
+    if (d[campo] && !flow.datos[campo]) {
+      flow.datos[campo] = d[campo];
+      nuevos.push(campo);
+    } else if (d[campo] && campo === 'yardas') {
+      flow.datos.yardas = d.yardas; // una corrección de cantidad manda
+    }
+  }
+  if (d.inspeccion) flow.datos.inspeccion = true;
+  return nuevos;
+}
+
+/** Confirmación breve de un dato recién capturado. */
+function confirmacionDe(campo, datos) {
+  switch (campo) {
+    case 'yardas':
+      return `anotadas las *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
+    case 'mix':
+      return `anotado el mix: *${datos.mix}*`;
+    case 'direccion':
+      return `anotada la *dirección*`;
+    case 'fecha':
+      return `anotado el día: *${datos.fecha}*`;
+    case 'hora':
+      return `anotada la hora: *${datos.hora}*`;
+    case 'slump':
+      return `anotado el slump: *${datos.slump}*`;
+    default:
+      return 'anotado';
+  }
+}
+
+/** La pregunta por el dato que falta, en el orden del dueño. */
+function preguntaPara(paso, datos) {
+  switch (paso) {
+    case 'yardas':
+      return '¿Cuántas yardas necesita?';
+    case 'mix':
+      return '¿Qué mix o resistencia (PSI) necesita?';
+    case 'direccion':
+      return '¿Cuál es la dirección completa de la obra?';
+    case 'fecha':
+      // Si ya dio la hora, solo falta el día; si no, se piden juntos,
+      // que es como el dueño pregunta («la hora» = día y hora).
+      return datos.hora
+        ? '¿Para qué día lo necesita?'
+        : '¿Para qué día lo necesita y a qué hora en la obra?';
+    case 'hora':
+      return '¿A qué hora lo necesita en la obra?';
+    default:
+      return '';
+  }
+}
+
+/** Fecha corta M/D/AA de la entrega, para la línea 1 de la confirmación. */
+function fechaCortaEntrega(fechaTexto) {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: NEGOCIO.zonaHoraria,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const Y = +partes.find((p) => p.type === 'year').value;
+  const M = +partes.find((p) => p.type === 'month').value;
+  const D = +partes.find((p) => p.type === 'day').value;
+  const base = Date.UTC(Y, M - 1, D);
+  const fmt = (ms) => {
+    const f = new Date(ms);
+    return `${f.getUTCMonth() + 1}/${f.getUTCDate()}/${String(f.getUTCFullYear()).slice(2)}`;
+  };
+  const t = normalizar(fechaTexto || '');
+
+  const mNum = t.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+  if (mNum) {
+    const yy = mNum[3]
+      ? mNum[3].length === 4
+        ? mNum[3].slice(2)
+        : mNum[3]
+      : String(Y).slice(2);
+    return `${+mNum[1]}/${+mNum[2]}/${yy}`;
+  }
+  if (/pasado manana/.test(t)) return fmt(base + 2 * 86400000);
+  if (/\bmanana\b/.test(t)) return fmt(base + 86400000);
+  if (/\bhoy\b/.test(t)) return fmt(base);
+
+  const dias = { domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6 };
+  for (const [nombreDia, num] of Object.entries(dias)) {
+    if (new RegExp(`\\b${nombreDia}\\b`).test(t)) {
+      const hoyDia = new Date(base).getUTCDay();
+      return fmt(base + ((num - hoyDia + 7) % 7) * 86400000);
+    }
+  }
+  const meses = {
+    enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
+    julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+  };
+  const mMes = t.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/);
+  if (mMes) {
+    let ms = Date.UTC(Y, meses[mMes[2]], +mMes[1]);
+    if (ms < base) ms = Date.UTC(Y + 1, meses[mMes[2]], +mMes[1]);
+    return fmt(ms);
+  }
+  return fmt(base); // no se pudo interpretar: se deja la fecha de hoy
+}
+
+/**
+ * Arma el texto de CONFIRMACIÓN PARA EL CLIENTE con el formato exacto
+ * del dueño (texto plano, una línea por dato, en este orden):
+ *   {fecha M/D/AA} {nombre del cliente}
+ *   {cantidad} yds{ plus si aplica}
+ *   {mix tal como lo dio el cliente}
+ *   {dirección completa}
+ *   {hora} jobsite
+ *   Slump {slump}{ (inspection) si pidió inspección}
+ *   Order number
+ * La línea de la planta se OMITE siempre (regla del dueño: el cliente
+ * directo no debe saber de dónde carga el concreto) y la línea
+ * «Order number» va sin número: Jesus lo completa a mano al apartar
+ * en la planta, antes de enviarle esta confirmación al cliente.
+ * El bot NO la envía solo: la deja guardada en la conversación.
+ */
+function armarConfirmacion(datos, conversacion) {
+  const nombreCliente =
+    conversacion.name && conversacion.name !== conversacion.waId
+      ? conversacion.name
+      : conversacion.waId;
+  const lineas = [
+    `${fechaCortaEntrega(datos.fecha)} ${nombreCliente}`,
+    `${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}`,
+    `${datos.mix}`,
+    `${datos.direccion}`,
+    `${datos.hora} jobsite`,
+    `Slump${datos.slump ? ` ${datos.slump}` : ''}${datos.inspeccion ? ' (inspection)' : ''}`,
+    'Order number',
+  ];
+  return lineas.join('\n');
+}
+
+/** Cierre corto al cliente cuando el flujo queda completo. */
+function resumenCliente(datos, nombre) {
+  const n = nombre && nombre !== '' ? ` ${nombre}` : '';
+  return (
+    `¡Listo${n}! ✅ Ya quedó registrada su orden:\n` +
+    `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
+    `• Mix: ${datos.mix}\n` +
+    `• Dirección: ${datos.direccion}\n` +
+    `• Día: ${datos.fecha} — ${datos.hora}\n\n` +
+    `Le confirmamos precio y disponibilidad en seguida. ` +
+    `Un especialista le atiende por aquí mismo. 🙏`
+  );
+}
+
+/**
+ * Avanza el flujo con un mensaje del cliente.
+ * `esNuevo` = el flujo se acaba de abrir con este mensaje.
+ * Devuelve la decisión de respuesta (mismo formato que decidirRespuesta),
+ * con `confirmacionArmada` cuando el flujo se completa.
+ */
+function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
+  const flow = conversacion.flow;
+  const detectados = extraerDatos(textoCliente, pasoActual(flow));
+  const nuevos = fusionarDatos(flow, detectados);
+
+  const paso = pasoActual(flow);
+  if (!paso) {
+    // Flujo completo: cierre al cliente + confirmación armada.
+    const datos = flow.datos;
+    const confirmacionArmada = armarConfirmacion(datos, conversacion);
+    db.setConversationFlow(conversacion.id, null);
+    conversacion.flow = null;
+    return {
+      responder: true,
+      texto: resumenCliente(datos, conversacion.name),
+      intent: flow.tipo,
+      topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+      confirmacionArmada,
+    };
+  }
+  db.setConversationFlow(conversacion.id, flow);
+  conversacion.flow = flow;
+
+  const partes = [];
+  if (esNuevo) {
+    partes.push(
+      flow.tipo === 'pedido'
+        ? '¡Perfecto, le tomamos su pedido! 🏗️'
+        : 'Con gusto le ayudamos con su cotización 🏗️'
+    );
+  }
+  if (nuevos.length) {
+    partes.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos)).join('; ')}.`);
+  } else if (!esNuevo) {
+    partes.push(`Sigamos con ${flow.tipo === 'pedido' ? 'su pedido' : 'su cotización'} 🏗️`);
+  }
+  partes.push(preguntaPara(paso, flow.datos));
+
+  return {
+    responder: true,
+    texto: partes.join('\n'),
+    intent: flow.tipo,
+    topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+    intentDetectado,
+  };
+}
+
+/** ¿El mensaje abre el flujo? (intent de cotización/pedido o datos ya dados). */
+function abreFlujo(intent, textoCliente) {
+  if (intent.id === 'cotizacion' || intent.id === 'pedido') return true;
+  const d = extraerDatos(textoCliente, null);
+  if (d.yardas) return true;
+  const t = normalizar(textoCliente);
+  return (
+    /\b(quiero|necesito|ocupo|me urge)\b/.test(t) &&
+    /\b(concreto|yarda|yds|cotizacion|mix|mezcla)\b/.test(t)
+  );
 }
 
 /**
@@ -273,7 +653,7 @@ function construirRespuesta(intentId, nombre) {
  *  - el bot está pausado para esa conversación (lo atiende un humano), o
  *  - un ESPECIALISTA respondió hace menos de AUTOREPLY_HUMAN_PAUSE_MIN minutos
  *    (para no interrumpir la conversación humana).
- * Devuelve { responder, texto, intent, topic, motivo }.
+ * Devuelve { responder, texto, intent, topic, motivo, confirmacionArmada? }.
  */
 function decidirRespuesta(conversacion, textoCliente) {
   if (conversacion.botPaused) {
@@ -286,9 +666,50 @@ function decidirRespuesta(conversacion, textoCliente) {
       return { responder: false, motivo: 'especialista activo recientemente' };
     }
   }
+
   const intent = detectarIntent(textoCliente);
+
+  // --- Flujo de cotización/pedido EN CURSO: tiene prioridad.
+  // Las respuestas cortas se interpretan como el dato que se pidió;
+  // jamás se cae al menú genérico a mitad del flujo.
+  if (conversacion.flow && conversacion.flow.datos) {
+    if (intent.id === 'humano') {
+      // El cliente pidió una persona: se cierra el flujo y se le atiende.
+      db.setConversationFlow(conversacion.id, null);
+      conversacion.flow = null;
+      return {
+        responder: true,
+        texto: textoEfectivo('humano', conversacion.name),
+        intent: 'humano',
+        topic: 'hablar con un especialista',
+      };
+    }
+    return manejarFlujo(conversacion, textoCliente, false, intent.id);
+  }
+
+  // --- Apertura del flujo de cotización/pedido.
+  if (intent.id !== 'humano' && abreFlujo(intent, textoCliente)) {
+    conversacion.flow = {
+      tipo: intent.id === 'pedido' ? 'pedido' : 'cotizacion',
+      datos: datosVacios(),
+    };
+    return manejarFlujo(conversacion, textoCliente, true, intent.id);
+  }
+
+  // --- Respuesta normal por intent (comportamiento de siempre).
   const texto = textoEfectivo(intent.id, conversacion.name);
   return { responder: true, texto, intent: intent.id, topic: intent.topic };
 }
 
-module.exports = { detectarIntent, construirRespuesta, decidirRespuesta, listarRespuestas, esIntentValido, INTENTS };
+module.exports = {
+  detectarIntent,
+  construirRespuesta,
+  decidirRespuesta,
+  listarRespuestas,
+  esIntentValido,
+  INTENTS,
+  // Exportados para pruebas del flujo:
+  extraerDatos,
+  armarConfirmacion,
+  fechaCortaEntrega,
+};

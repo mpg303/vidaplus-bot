@@ -180,6 +180,31 @@ async function procesarMensajeEntrante(msg, nombrePerfil) {
     return; // sin respuesta enviada no se programa seguimiento
   }
 
+  // 3b. Si el flujo de cotización/pedido se completó, se deja ARMADA en
+  //     la conversación la confirmación para el cliente con el formato
+  //     del dueño (ver armarConfirmacion en autoReply.js). NO se envía
+  //     al cliente: Jesus completa a mano el número de orden (la planta
+  //     no se incluye nunca) y la manda él desde el panel. Se guarda
+  //     como mensaje BOT sin metaId ni estado de envío (no salió a Meta)
+  //     y se marca la conversación para atención humana.
+  if (decision.confirmacionArmada) {
+    db.addMessage({
+      conversationId: conv.id,
+      waId,
+      sender: 'BOT',
+      type: 'text',
+      text: decision.confirmacionArmada,
+      status: null,
+      flags: {
+        tipo: 'confirmacion_armada',
+        pendienteCompletar: ['orderNumber'],
+        auto: true,
+      },
+    });
+    db.setNeedsHuman(conv.id, true);
+    console.log(`[webhook] confirmación armada en panel (pendiente número de orden) — ${waId}`);
+  }
+
   // 4. Programar el seguimiento 24h (insistencia si no contestan).
   //    Se cancela/reinicia solo con cada mensaje nuevo del cliente.
   followup.programar(conv.id, {

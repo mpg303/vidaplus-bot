@@ -19,7 +19,9 @@ const DB_FILE = path.join(cfg.dataDir, 'db.json');
 
 function vacia() {
   return {
-    conversations: [], // { id, waId, name, lastMessageAt, lastPreview, unread, botPaused, needsHuman, surveySentAt }
+    conversations: [], // { id, waId, name, lastMessageAt, lastPreview, unread, botPaused, needsHuman, surveySentAt, flow }
+    // flow: estado del flujo de cotización/pedido en curso, o null:
+    // { tipo: 'cotizacion'|'pedido', datos: { yardas:{cantidad,plus}|null, mix, direccion, fecha, hora, slump, inspeccion } }
     messages: [],      // { id, conversationId, waId, sender: CLIENTE|BOT|ESPECIALISTA, type, text, metaId, status, timestamp, flags }
     followups: [],     // { id, conversationId, intent, topic, questionText, scheduledAt, attempts, status, createdAt }
     campaigns: [],     // { id, name, templateName, language, status, createdAt, recipients: [{phone,name,status,error,sentAt}] }
@@ -78,6 +80,7 @@ function upsertConversation(waId, name) {
       botPaused: false,
       needsHuman: false,
       surveySentAt: null,
+      flow: null,
     };
     db.conversations.push(c);
   } else if (name && name !== waId && c.name === c.waId) {
@@ -179,6 +182,16 @@ function setNeedsHuman(id, value) {
     c.needsHuman = !!value;
     save();
   }
+}
+
+/** Guarda (o limpia, con null) el estado del flujo de cotización/pedido. */
+function setConversationFlow(id, flow) {
+  const c = getConversation(id);
+  if (c) {
+    c.flow = flow || null;
+    save();
+  }
+  return c;
 }
 
 function updateMessageStatus(metaId, status, errors) {
@@ -374,6 +387,7 @@ module.exports = {
   markConversationRead,
   setBotPaused,
   setNeedsHuman,
+  setConversationFlow,
   updateMessageStatus,
   scheduleFollowup,
   cancelFollowups,
