@@ -7,6 +7,7 @@
 //   GET    /api/conversations/:id            (incluye mensajes)
 //   POST   /api/conversations/:id/read      (marcar leída)
 //   POST   /api/conversations/:id/reply     { text } → ESPECIALISTA
+//   POST   /api/send                        { to, text } → ESPECIALISTA (crea la conversación si no existe)
 //   POST   /api/conversations/:id/pause     { paused: true|false }
 //   POST   /api/conversations/:id/survey    { via, templateName? }
 // Campañas:
@@ -73,6 +74,38 @@ router.post('/conversations/:id/reply', async (req, res) => {
     res.json({ ok: true, message: m });
   } catch (e) {
     console.error('[inbox] error al responder:', e.message);
+    res.status(502).json({ error: 'No se pudo enviar: ' + e.message });
+  }
+});
+
+// Envío directo a un número como ESPECIALISTA, sin necesidad de que
+// la conversación ya exista (se crea si hace falta, igual que hace el
+// webhook cuando el cliente escribe). Sirve para escribirle a un
+// cliente cuyo hilo no está en el estado (p. ej. se perdió el historial).
+//   POST /api/send  { to, text }   (alias: phone / message)
+router.post('/send', async (req, res) => {
+  const to = String(req.body?.to || req.body?.phone || '').replace(/\D/g, '');
+  const text = String(req.body?.text || req.body?.message || '').trim();
+  if (!to) return res.status(400).json({ error: 'Falta el número destino (to).' });
+  if (!text) return res.status(400).json({ error: 'El mensaje no puede estar vacío.' });
+
+  try {
+    const conv = db.getConversationByWaId(to) || db.upsertConversation(to);
+    const metaId = await sendText(conv.waId, text);
+    const m = db.addMessage({
+      conversationId: conv.id,
+      waId: conv.waId,
+      sender: 'ESPECIALISTA', // ← rol humano
+      type: 'text',
+      text,
+      metaId,
+      status: 'sent',
+    });
+    // Un humano escribió: se cancela el seguimiento automático.
+    followup.cancelar(conv.id, 'especialista escribió con envío directo');
+    res.json({ ok: true, metaId, conversationId: conv.id, message: m });
+  } catch (e) {
+    console.error('[inbox] error en envío directo:', e.message);
     res.status(502).json({ error: 'No se pudo enviar: ' + e.message });
   }
 });
