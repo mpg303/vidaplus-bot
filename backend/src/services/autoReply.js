@@ -79,6 +79,11 @@ const INTENTS = [
     keywords: [
       'pedido', 'pedir', 'ordenar', 'quiero concreto', 'quiero yardas',
       'necesito concreto', 'necesito yardas', 'agendar entrega',
+      // La gente también pide «cemento» (y mal escrito «semento», o
+      // «hormigón»): es lo mismo que concreto y debe abrir el pedido.
+      'quiero cemento', 'necesito cemento', 'ocupo cemento',
+      'quiero semento', 'necesito semento', 'ocupo semento',
+      'quiero hormigon', 'necesito hormigon', 'ocupo hormigon',
       'programar', 'apartar', 'quiero comprar', 'me manda', 'envieme',
     ],
   },
@@ -512,7 +517,13 @@ function extraerDatos(texto, paso) {
   if (aire) d.aire = aire;
 
   // --- Mix ---
-  const mPsi = raw.match(/(\d{3,5})\s*psi\b/i);
+  // La resistencia se pide como «4000 psi», «3000 libras» o el número
+  // solo («cemento 4000»): las tres formas se entienden como el mix.
+  // El número solo NO se captura si el mensaje parece una dirección
+  // (podría ser el número de la calle).
+  const mPsi =
+    raw.match(/(\d{3,5})\s*(?:psi|libras)\b/i) ||
+    (!esDireccion ? raw.match(/\b(2500|3000|3500|4000|4500|5000|5500|6000)\b/) : null);
   if (mPsi) {
     d.mix = `${mPsi[1]} psi`;
   } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora) {
@@ -888,7 +899,7 @@ function abreFlujo(intent, textoCliente) {
   const t = normalizar(textoCliente);
   return (
     /\b(quiero|necesito|ocupo|me urge)\b/.test(t) &&
-    /\b(concreto|yarda|yds|cotizacion|mix|mezcla)\b/.test(t)
+    /\b(concreto|cemento|semento|hormigon|yarda|yds|cotizacion|mix|mezcla)\b/.test(t)
   );
 }
 
