@@ -1,14 +1,24 @@
 // ============================================================
-// Almacenamiento local en JSON (sin servicios externos).
-// Guarda conversaciones, mensajes, seguimientos, campañas y sesiones.
-// La escritura es atómica (tmp + rename) para no corromper el archivo.
+// Almacenamiento del bot: conversaciones, mensajes, seguimientos,
+// campañas y sesiones.
 //
-// NOTA PARA PRODUCCIÓN: en un hosting serverless (p. ej. Vercel
-// Functions) el disco es efímero y este archivo NO persistiría.
-// Por eso el backend se despliega como proceso Node de larga
-// duración (Render/Railway/VPS). Si algún día se mueve a serverless,
-// hay que cambiar este módulo por una base de datos real (Postgres,
-// etc.) manteniendo las mismas funciones.
+// PERSISTENCIA PERMANENTE (Supabase): el estado completo vive en
+// la tabla propia de JMP `public.jmp_state` (fila «bot_db», JSONB)
+// del proyecto Supabase existente. Render Free borra el disco en
+// cada reinicio, así que db.json ya NO es la fuente de verdad:
+// - Al arrancar, db.js descarga el estado desde Supabase (server.js
+//   espera a db.ready() antes de escuchar) y lo deja en la caché
+//   en memoria, que es con lo que trabaja todo el código (la
+//   interfaz de este módulo sigue siendo síncrona, como siempre).
+// - Cada save() escribe el db.json local (respaldo del proceso) Y
+//   sube el estado completo a Supabase (con debounce, en segundo
+//   plano). Como siempre se sube el estado ENTERO, un fallo de red
+//   se cura solo con el siguiente guardado.
+// - Si faltan SUPABASE_URL / SUPABASE_SERVICE_KEY (o
+//   SUPABASE_ANON_KEY), se trabaja solo con db.json local,
+//   exactamente como antes de esta migración.
+// La escritura local es atómica (tmp + rename) para no corromper
+// el archivo.
 // ============================================================
 const fs = require('fs');
 const path = require('path');
@@ -40,7 +50,7 @@ function load() {
       cache = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
     } else {
       cache = vacia();
-      save();
+      saveLocal();
     }
   } catch (e) {
     console.error('[db] No se pudo leer db.json, se usa memoria:', e.message);
@@ -50,7 +60,8 @@ function load() {
   return cache;
 }
 
-function save() {
+/** Escritura solo en el archivo local (respaldo del proceso). */
+function saveLocal() {
   try {
     fs.mkdirSync(cfg.dataDir, { recursive: true });
     const tmp = DB_FILE + '.tmp';
@@ -59,6 +70,128 @@ function save() {
   } catch (e) {
     console.error('[db] No se pudo guardar db.json:', e.message);
   }
+}
+
+function save() {
+  saveLocal();
+  schedulePush();
+}
+
+// ---------------- Persistencia permanente (Supabase REST) ----------------
+// Tabla public.jmp_state: una sola fila (name = cfg.supabaseStateName)
+// con TODO el estado en la columna JSONB `data` — el mismo diseño
+// simple que ya usa el Daily Report con su tabla de colecciones.
+// Solo se usa fetch (Node >= 18): ninguna dependencia nueva.
+
+const REMOTE_ON = Boolean(cfg.supabaseUrl && cfg.supabaseKey);
+const remoteUrl = () =>
+  `${cfg.supabaseUrl.replace(/\/+$/, '')}/rest/v1/${cfg.supabaseTable}`;
+const remoteHeaders = (extra = {}) => ({
+  apikey: cfg.supabaseKey,
+  Authorization: `Bearer ${cfg.supabaseKey}`,
+  'Content-Type': 'application/json',
+  ...extra,
+});
+
+let pushing = false;
+let pushAgain = false;
+let pushTimer = null;
+
+/** Sube el estado completo a Supabase (upsert de la fila del bot). */
+async function pushRemote() {
+  if (!REMOTE_ON || !cache) return;
+  if (pushing) {
+    pushAgain = true;
+    return;
+  }
+  pushing = true;
+  try {
+    const res = await fetch(remoteUrl(), {
+      method: 'POST',
+      headers: remoteHeaders({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+      body: JSON.stringify([
+        { name: cfg.supabaseStateName, data: cache, updated_at: new Date().toISOString() },
+      ]),
+    });
+    if (!res.ok) {
+      console.error('[db] Supabase: no se pudo subir el estado:', res.status, (await res.text()).slice(0, 200));
+    }
+  } catch (e) {
+    console.error('[db] Supabase: error de red al subir el estado:', e.message);
+  } finally {
+    pushing = false;
+    if (pushAgain) {
+      pushAgain = false;
+      pushRemote();
+    }
+  }
+}
+
+/** Agrupa guardados seguidos: sube una sola vez, 300 ms después del último. */
+function schedulePush() {
+  if (!REMOTE_ON) return;
+  if (pushTimer) clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    pushTimer = null;
+    pushRemote();
+  }, 300);
+  if (pushTimer.unref) pushTimer.unref();
+}
+
+/** Descarga el estado desde Supabase; null si la fila aún no existe. */
+async function pullRemote() {
+  const q = `?select=data&name=eq.${encodeURIComponent(cfg.supabaseStateName)}&limit=1`;
+  const res = await fetch(remoteUrl() + q, { headers: remoteHeaders() });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+  const rows = await res.json();
+  const data = rows && rows[0] && rows[0].data;
+  if (!data || typeof data !== 'object' || !Array.isArray(data.conversations)) {
+    return null;
+  }
+  return data;
+}
+
+// Carga inicial desde Supabase. server.js espera db.ready() antes de
+// escuchar (con un tope de unos segundos): así ningún webhook se
+// procesa con la caché vacía. Si Supabase falla, se sigue con el
+// db.json local y los siguientes save() reintentan la subida.
+let resolveReady;
+const readyPromise = new Promise((r) => {
+  resolveReady = r;
+});
+
+async function hydrate() {
+  if (!REMOTE_ON) {
+    console.log('[db] Supabase no configurado: se guarda solo en db.json local.');
+    resolveReady();
+    return;
+  }
+  load();
+  try {
+    const remote = await pullRemote();
+    if (remote) {
+      cache = Object.assign(vacia(), remote);
+      if (!cache.replies) cache.replies = {};
+      saveLocal();
+      console.log('[db] Supabase: estado cargado desde la base permanente.');
+    } else {
+      // Primera vez: la fila no existe (o está vacía) — se sube el
+      // estado local actual como punto de partida.
+      await pushRemote();
+      console.log('[db] Supabase: estado inicial subido a la base permanente.');
+    }
+  } catch (e) {
+    console.error('[db] Supabase no respondió al arrancar; se sigue con db.json local:', e.message);
+  }
+  resolveReady();
+}
+hydrate();
+
+/** Promesa que se resuelve cuando la carga inicial terminó (o falló). */
+function ready() {
+  return readyPromise;
 }
 
 const uid = (p) => `${p}_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
@@ -373,6 +506,7 @@ function clearReplyOverride(intentId) {
 module.exports = {
   load,
   save,
+  ready,
   getReplyOverrides,
   setReplyOverride,
   clearReplyOverride,

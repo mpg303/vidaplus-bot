@@ -8,6 +8,7 @@
 // ============================================================
 const express = require('express');
 const { cfg } = require('./config');
+const db = require('./db');
 
 const app = express();
 
@@ -44,15 +45,25 @@ app.get('/', (req, res) => {
   });
 });
 
-app.listen(cfg.port, () => {
-  console.log(`[api] escuchando en puerto ${cfg.port}`);
-  if (!cfg.metaAccessToken || !cfg.metaPhoneNumberId) {
-    console.warn(
-      '[api] AVISO: faltan META_ACCESS_TOKEN o META_PHONE_NUMBER_ID. ' +
-        'El envío a WhatsApp no funcionará hasta configurarlos (ver .env.example).'
-    );
-  }
-  if (!cfg.panelPass) {
-    console.warn('[api] AVISO: falta PANEL_PASS. El login del panel no funcionará.');
-  }
-});
+function start() {
+  app.listen(cfg.port, () => {
+    console.log(`[api] escuchando en puerto ${cfg.port}`);
+    if (!cfg.metaAccessToken || !cfg.metaPhoneNumberId) {
+      console.warn(
+        '[api] AVISO: faltan META_ACCESS_TOKEN o META_PHONE_NUMBER_ID. ' +
+          'El envío a WhatsApp no funcionará hasta configurarlos (ver .env.example).'
+      );
+    }
+    if (!cfg.panelPass) {
+      console.warn('[api] AVISO: falta PANEL_PASS. El login del panel no funcionará.');
+    }
+  });
+}
+
+// Se espera a que db.js cargue el estado desde Supabase antes de
+// escuchar (tope de 6 s: si Supabase no responde, se arranca con el
+// db.json local y la subida se reintenta en cada guardado).
+Promise.race([
+  db.ready(),
+  new Promise((r) => setTimeout(r, 6000)),
+]).then(start, start);

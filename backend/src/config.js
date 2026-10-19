@@ -52,6 +52,19 @@ const cfg = {
   autoreplyHumanPauseMin: parseInt(process.env.AUTOREPLY_HUMAN_PAUSE_MIN || '30', 10),
 
   dataDir: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
+
+  // --- Persistencia permanente (Supabase) ---
+  // Tabla propia de JMP (public.jmp_state) en el proyecto Supabase
+  // existente; el estado completo del bot vive ahí y NUNCA se pierde
+  // con los reinicios de Render. Si faltan estas variables, db.js
+  // cae de vuelta al db.json local (comportamiento anterior).
+  // La service key manda; si no está, se usa la anon key (la tabla
+  // tiene política RLS que la permite solo para esta tabla).
+  supabaseUrl: process.env.SUPABASE_URL || '',
+  supabaseKey:
+    process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || '',
+  supabaseTable: process.env.SUPABASE_TABLE || 'jmp_state',
+  supabaseStateName: process.env.SUPABASE_STATE_NAME || 'bot_db',
 };
 
 /**
