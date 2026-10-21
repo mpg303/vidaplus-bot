@@ -31,7 +31,8 @@ function vacia() {
   return {
     conversations: [], // { id, waId, name, lastMessageAt, lastPreview, unread, botPaused, needsHuman, surveySentAt, flow }
     // flow: estado del flujo de cotización/pedido en curso, o null:
-    // { tipo: 'cotizacion'|'pedido', datos: { yardas:{cantidad,plus}|null, mix, aire, direccion, fecha, hora, slump, inspeccion, nombre, compania } }
+    // { tipo: 'cotizacion'|'pedido', idioma: 'es'|'en', intentos, intentosPaso, turnos, pagoAclaracionPedida,
+    //   datos: { yardas:{cantidad,plus}|null, mix, aire, direccion, fecha, hora, slump, inspeccion, nombre, compania, pago } }
     messages: [],      // { id, conversationId, waId, sender: CLIENTE|BOT|ESPECIALISTA, type, text, metaId, status, timestamp, flags }
     followups: [],     // { id, conversationId, intent, topic, questionText, scheduledAt, attempts, status, createdAt }
     campaigns: [],     // { id, name, templateName, language, status, createdAt, recipients: [{phone,name,status,error,sentAt}] }

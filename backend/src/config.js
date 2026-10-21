@@ -24,7 +24,9 @@ const NEGOCIO = {
   zona: 'Dallas–Fort Worth, TX y alrededores',
   zonaHoraria: 'America/Chicago',
   // Texto de horario que se usa en las respuestas automáticas.
-  horarioTexto: 'lunes a sábado',
+  // El negocio se anuncia 24/7 (así lo dice su sitio): la respuesta
+  // de horario debe decir la verdad — 24/7, todos los días.
+  horarioTexto: '24/7, todos los días',
 };
 
 const cfg = {
@@ -68,23 +70,17 @@ const cfg = {
 };
 
 /**
- * ¿Está el negocio en horario ahora? (hora de Chicago)
- * Lun–Sáb se considera horario de trabajo; domingo cerrado.
+ * ¿Está el negocio en horario ahora? El negocio trabaja 24/7
+ * (así se anuncia en su sitio), así que siempre está en horario,
+ * domingo incluido.
  */
 function negocioAbiertoAhora(fecha = new Date()) {
-  const partes = new Intl.DateTimeFormat('en-US', {
-    timeZone: NEGOCIO.zonaHoraria,
-    weekday: 'short',
-  }).formatToParts(fecha);
-  const dia = partes.find((p) => p.type === 'weekday')?.value; // Sun, Mon, ...
-  return dia !== 'Sun';
+  return true;
 }
 
 /** Aviso corto según si está en horario o no (para agregar a respuestas). */
 function avisoApertura() {
-  return negocioAbiertoAhora()
-    ? '✅ Ahorita estamos en horario, ¡escríbanos!'
-    : '🌙 Hoy domingo estamos cerrados, pero déjenos su mensaje y le atendemos.';
+  return '✅ Estamos en horario (24/7), ¡escríbanos cuando guste!';
 }
 
 module.exports = { NEGOCIO, cfg, negocioAbiertoAhora, avisoApertura };

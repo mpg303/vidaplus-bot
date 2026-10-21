@@ -135,8 +135,11 @@ async function procesarMensajeEntrante(msg, nombrePerfil) {
   });
   markAsRead(msg.id).catch(() => {});
 
-  // 2. Decidir respuesta automática
-  const decision = decidirRespuesta(conv, texto);
+  // 2. Decidir respuesta automática. Se pasa también el TIPO de
+  //    mensaje de Meta (text, audio, location, image…): un mensaje
+  //    que no es texto jamás debe guardarse como dato del flujo;
+  //    el bot pide el dato en texto.
+  const decision = decidirRespuesta(conv, texto, msg.type || 'text');
 
   if (!decision.responder) {
     // Hay humano activo o bot pausado: no interrumpir.

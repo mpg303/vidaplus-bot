@@ -62,9 +62,37 @@ const INTENTS = [
     keywords: [
       'hablar con alguien', 'quiero hablar', 'una persona', 'humano',
       'agente', 'asesor', 'operador', 'alguien que me atienda',
-      'me atienda alguien', 'persona real', 'jesus', 'morillo',
-      'especialista',
+      'me atienda alguien', 'persona real', 'especialista',
+      'hablar con una persona', 'necesito ayuda', 'i need help',
+      'help me', 'speak to someone', 'talk to a person',
+      'real person', 'representative',
+      // OJO: «jesus» y «morillo» NO van aquí a propósito — son el
+      // nombre del dueño y de posibles clientes; si el cliente se
+      // llama Jesús, su nombre jamás debe disparar el pase a humano
+      // (falla real del 2026-10-19: la orden moría en el último paso).
     ],
+  },
+  {
+    id: 'faq_pagos',
+    label: '💳 ¿Aceptan tarjeta? (formas de pago)',
+    topic: 'las formas de pago',
+    keywords: [
+      'aceptan tarjeta', 'acepta tarjeta', 'aceptan zelle',
+      'formas de pago', 'forma de pago', 'puedo pagar con',
+      'do you accept', 'how can i pay',
+    ],
+  },
+  {
+    id: 'faq_minimo',
+    label: '📏 ¿Cuál es el mínimo de yardas?',
+    topic: 'el mínimo de yardas',
+    keywords: ['minimo', 'mínimo', 'minimum'],
+  },
+  {
+    id: 'faq_bomba',
+    label: '🚧 ¿Tienen bomba?',
+    topic: 'la bomba de concreto',
+    keywords: ['tienen bomba', 'bomba', 'pump'],
   },
   {
     id: 'cotizacion',
@@ -74,6 +102,7 @@ const INTENTS = [
       'precio', 'costo', 'cuanto cuesta', 'cuánto cuesta',
       'tarifa', 'cobran', 'vale', 'presupuesto', 'cotizacion',
       'cotización', 'cotizar', 'presio', 'cuanto sale', 'cuanto vale',
+      'price', 'cost', 'how much',
     ],
   },
   {
@@ -89,6 +118,8 @@ const INTENTS = [
       'quiero semento', 'necesito semento', 'ocupo semento',
       'quiero hormigon', 'necesito hormigon', 'ocupo hormigon',
       'programar', 'apartar', 'quiero comprar', 'me manda', 'envieme',
+      'i need concrete', 'i want concrete', 'need concrete',
+      'we need concrete', 'order concrete',
     ],
   },
   {
@@ -97,8 +128,9 @@ const INTENTS = [
     topic: 'el estatus de una entrega',
     keywords: [
       'entrega', 'camion', 'camión', 'truck', 'mixer', 'cuando llega',
-      'cuándo llega', 'ya viene', 'donde viene', 'estatus', 'status',
-      'retraso', 'atrasado', 'llego', 'llegó',
+      'cuándo llega', 'cuanto llega', 'cuánto llega', 'a que hora llega',
+      'cuando viene', 'ya viene', 'donde viene', 'estatus', 'status',
+      'retraso', 'atrasado', 'llego', 'llegó', 'en camino',
     ],
   },
   {
@@ -164,6 +196,20 @@ function keywordsEfectivas(intent) {
 /** Detecta el intent de un mensaje del cliente. */
 function detectarIntent(texto) {
   const t = ` ${normalizar(texto)} `;
+  // Prioridad de llegada sobre precio: «¿en cuánto llega mi cemento?»
+  // o «¿cuándo llega mi camión?» son ESTATUS DE ENTREGA, no precio,
+  // aunque lleven «cuánto». Solo si hay palabras de precio claras
+  // (cuesta, sale, vale, precio, costo…) manda el precio.
+  const tn = normalizar(texto);
+  const esLlegada =
+    /\b(cuanto|cuando|a que hora)\b[^.?!]*\b(llega|llegan|viene|vienen)\b/.test(tn) ||
+    /\ben camino\b/.test(tn);
+  const precioClaro =
+    /\b(precio|precios|price|costo|cost|tarifa|cuesta|cuestan|sale|salen|vale|valen)\b/.test(tn);
+  if (esLlegada && !precioClaro) {
+    const entrega = INTENTS.find((i) => i.id === 'entrega');
+    if (entrega) return entrega;
+  }
   for (const intent of INTENTS) {
     if (keywordsEfectivas(intent).some((k) => t.includes(normalizar(k)))) {
       return intent;
@@ -173,11 +219,43 @@ function detectarIntent(texto) {
 }
 
 /**
+ * Idioma del mensaje: 'en' si es claramente inglés, 'es' en otro
+ * caso. Muchos contratistas de DFW escriben en inglés: el bot debe
+ * saludar, correr el flujo y cerrar en su idioma.
+ */
+function detectarIdioma(texto) {
+  const t = ` ${normalizar(texto)} `;
+  const enWords = [
+    ' i ', ' you ', ' the ', ' and ', ' for ', ' to ', ' my ', ' me ',
+    ' need ', ' want ', ' please ', ' thanks ', ' thank ', ' how ',
+    ' much ', ' many ', ' yards ', ' yard ', ' concrete ', ' with ',
+    ' without ', ' tomorrow ', ' today ', ' name ', ' is ', ' are ',
+    ' do ', ' does ', ' can ', ' delivery ', ' address ', ' company ',
+    ' debit ', ' credit ', ' card ', ' when ', ' where ', ' what ',
+    ' monday ', ' tuesday ', ' wednesday ', ' thursday ', ' friday ',
+    ' saturday ', ' sunday ', ' air ',
+  ];
+  const esWords = [
+    ' quiero ', ' necesito ', ' gracias ', ' yardas ', ' concreto ',
+    ' cemento ', ' manana ', ' direccion ', ' compania ', ' para ',
+    ' el ', ' la ', ' los ', ' las ', ' una ', ' por ', ' con ',
+    ' sin ', ' aire ', ' dia ', ' hora ', ' nombre ', ' pago ',
+    ' pagar ', ' cuanto ', ' cuesta ', ' llega ', ' obra ',
+  ];
+  let en = 0;
+  let es = 0;
+  for (const w of enWords) if (t.includes(w)) en += 1;
+  for (const w of esWords) if (t.includes(w)) es += 1;
+  if (/\b(hello|good morning|good afternoon|good evening)\b/.test(t)) en += 2;
+  return en >= 2 && en > es ? 'en' : 'es';
+}
+
+/**
  * Texto efectivo de una respuesta: si el dueño editó el texto en el panel,
  * se usa ese (con variables {nombre}, {negocio}, {zona}, {telefono}, {horario});
  * si no, el texto de fábrica de construirRespuesta().
  */
-function textoEfectivo(intentId, nombre) {
+function textoEfectivo(intentId, nombre, idioma = 'es') {
   const ov = db.getReplyOverrides()[intentId];
   if (ov && typeof ov.text === 'string' && ov.text.trim()) {
     return ov.text
@@ -189,7 +267,7 @@ function textoEfectivo(intentId, nombre) {
       .replace(/  +/g, ' ')
       .trim();
   }
-  return construirRespuesta(intentId, nombre);
+  return construirRespuesta(intentId, nombre, idioma);
 }
 
 /** Lista completa para el editor del panel: textos y palabras clave, de fábrica y efectivos. */
@@ -237,8 +315,21 @@ function datosNecesarios() {
   );
 }
 
+function datosNecesariosEN() {
+  return (
+    `To help you I need these details:\n` +
+    `1️⃣ How many yards do you need?\n` +
+    `2️⃣ What strength (PSI) or mix type?\n` +
+    `3️⃣ Job site address\n` +
+    `4️⃣ What date do you need it?`
+  );
+}
+
+const ZONA_EN = 'Dallas–Fort Worth, TX and surrounding areas';
+
 /** Construye la respuesta en español para cada intent. */
-function construirRespuesta(intentId, nombre) {
+function construirRespuesta(intentId, nombre, idioma = 'es') {
+  if (idioma === 'en') return construirRespuestaEN(intentId, nombre);
   const n = nombre && nombre !== '' ? ` ${nombre}` : '';
   const C = NEGOCIO;
   switch (intentId) {
@@ -278,8 +369,9 @@ function construirRespuesta(intentId, nombre) {
       );
     case 'horario':
       return (
-        `Trabajamos de *${C.horarioTexto}*.\n` +
-        `Las entregas se coordinan según disponibilidad de planta.\n\n` +
+        `Trabajamos *${C.horarioTexto}* 🏗️\n` +
+        `Las entregas se coordinan según disponibilidad de planta; ` +
+        `escríbanos cuando guste.\n\n` +
         `${avisoApertura()}`
       );
     case 'zona':
@@ -291,6 +383,25 @@ function construirRespuesta(intentId, nombre) {
       return (
         `Con gusto 🙏. Un especialista le atenderá en breve por este mismo chat. ` +
         `Gracias por su paciencia.`
+      );
+    case 'faq_pagos':
+      // Formas de pago reales del negocio (sin pedir datos de cobro).
+      return (
+        `¡Claro! 🙏 Aceptamos *Zelle*, *tarjeta de débito* y *tarjeta de crédito*.\n` +
+        `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden.`
+      );
+    case 'faq_minimo':
+      // El mínimo real depende de la planta y la zona: NO se inventa cifra.
+      return (
+        `El mínimo de yardas lo confirma el especialista, porque depende de la planta ` +
+        `y de la zona de su obra 🙏\n` +
+        `Dígame cuántas yardas necesita y la dirección, y se lo confirmamos enseguida.`
+      );
+    case 'faq_bomba':
+      // La bomba se coordina por obra: no se promete sin confirmar.
+      return (
+        `La bomba se coordina según su obra y la confirmamos con su orden 🙏\n` +
+        `Cuéntenos los datos de su colado y un especialista le confirma la disponibilidad.`
       );
     case 'gracias':
       return (
@@ -311,6 +422,102 @@ function construirRespuesta(intentId, nombre) {
         `*cotización*, hacer un *pedido*, preguntar por una *entrega* ` +
         `o un *pago*.\n` +
         `Y si prefiere, escriba *especialista* y le atiende una persona enseguida.`
+      );
+  }
+}
+
+/** Construye la respuesta en inglés para cada intent. */
+function construirRespuestaEN(intentId, nombre) {
+  const n = nombre && nombre !== '' ? ` ${nombre}` : '';
+  const C = NEGOCIO;
+  switch (intentId) {
+    case 'saludo':
+      return (
+        `Hello${n}! 🏗️ Welcome to *${C.nombre}*.\n` +
+        `We sell concrete by the cubic yard in ${ZONA_EN}.\n` +
+        `How can we help? You can ask for a *quote*, place an *order*, ` +
+        `or ask about a *delivery* or a *payment*.`
+      );
+    case 'cotizacion':
+      return (
+        `Happy to help with your quote 🏗️.\n` +
+        `Pricing per yard depends on the plant and the mix, ` +
+        `so we prepare your quote to order:\n\n` +
+        `${datosNecesariosEN()}\n\n` +
+        `Send us those details and we'll get right back to you.`
+      );
+    case 'pedido':
+      return (
+        `Perfect, we'll take your order! 🏗️\n\n` +
+        `${datosNecesariosEN()}\n\n` +
+        `With those details a specialist confirms availability and price ` +
+        `right here.`
+      );
+    case 'entrega':
+      return (
+        `We'll check the status of your delivery 🚚.\n` +
+        `Could you confirm your name and the job site address? ` +
+        `A specialist will reply right away with the information.`
+      );
+    case 'pago':
+      return (
+        `Of course, we can help with your payment 💳.\n` +
+        `Send us your name or invoice number and we'll send you the ` +
+        `payment details. You can also call us at ${C.whatsapp}.`
+      );
+    case 'horario':
+      return (
+        `We work *24/7, every day* 🏗️\n` +
+        `Deliveries are coordinated based on plant availability — ` +
+        `just message us anytime.`
+      );
+    case 'zona':
+      return (
+        `We cover *${ZONA_EN}* 🏗️.\n` +
+        `Where is your job site? We'll confirm delivery.`
+      );
+    case 'humano':
+      return (
+        `Of course 🙏 A specialist will be with you shortly in this ` +
+        `same chat. Thanks for your patience.`
+      );
+    case 'faq_pagos':
+      return (
+        `Yes 🙏 We accept *Zelle*, *debit card* and *credit card*.\n` +
+        `Payment is in advance: as soon as your payment is confirmed, ` +
+        `we load your order.`
+      );
+    case 'faq_minimo':
+      return (
+        `The minimum yardage is confirmed by the specialist, since it ` +
+        `depends on the plant and your job's area 🙏\n` +
+        `Tell me how many yards you need and the address, and we'll ` +
+        `confirm right away.`
+      );
+    case 'faq_bomba':
+      return (
+        `A pump is coordinated based on your job, and we confirm it ` +
+        `with your order 🙏\n` +
+        `Tell us the details of your pour and a specialist will ` +
+        `confirm availability.`
+      );
+    case 'gracias':
+      return (
+        `You're very welcome${n}! 🏗️ Happy to help.\n` +
+        `Whenever you need concrete, we're here: ${C.whatsapp}.`
+      );
+    case 'adios':
+      return (
+        `Thanks for messaging us${n}! 🏗️ Have a great day. ` +
+        `We're here whenever you need concrete.`
+      );
+    default:
+      return (
+        `Sorry, I didn't quite get that 🙏\n` +
+        `Could you please repeat it? You can ask me for a *quote*, ` +
+        `place an *order*, or ask about a *delivery* or a *payment*.\n` +
+        `And if you prefer, type *specialist* and a person will help ` +
+        `you right away.`
       );
   }
 }
@@ -385,11 +592,11 @@ function pareceDireccion(raw) {
  */
 function extraerAire(raw) {
   if (
-    /\b(sin aire|no aire|no lleva aire|sin entrained air|non[-\s]?air|no air)\b/i.test(raw)
+    /\b(sin aire|no aire|no lleva aire|sin entrained air|non[-\s]?air|no air|without air)\b/i.test(raw)
   ) {
     return 'no aire';
   }
-  if (/\b(con aire|lleva aire|air[-\s]?entrained)\b/i.test(raw) || /\baire\b/i.test(raw) || /\bair\b/i.test(raw)) {
+  if (/\b(con aire|lleva aire|air[-\s]?entrained|with air)\b/i.test(raw) || /\baire\b/i.test(raw) || /\bair\b/i.test(raw)) {
     return 'con aire';
   }
   return null;
@@ -398,7 +605,7 @@ function extraerAire(raw) {
 /** Quita las frases de aire de un texto (para que no queden dentro del mix). */
 function quitarFrasesAire(texto) {
   return (texto || '')
-    .replace(/\b(sin aire|no aire|no lleva aire|con aire|lleva aire|non[-\s]?air|no air|air[-\s]?entrained)\b/gi, ' ')
+    .replace(/\b(sin aire|no aire|no lleva aire|con aire|lleva aire|non[-\s]?air|no air|without air|with air|air[-\s]?entrained)\b/gi, ' ')
     .replace(/\baire\b/gi, ' ')
     .replace(/\bair\b/gi, ' ')
     .replace(/\s{2,}/g, ' ')
@@ -427,10 +634,10 @@ function extraerNombreCompania(raw) {
   const t = (raw || '').trim();
   if (!t) return out;
   const esParticular =
-    /\b(particular|no tengo compan\w*|sin compan\w*|no tengo empresa|no es empresa|es personal|solo yo|soy yo mismo)\b/i.test(
+    /\b(particular|no tengo compan\w*|sin compan\w*|no tengo empresa|no es empresa|es personal|solo yo|soy yo mismo|no company|just personal|don'?t have a company|dont have a company|it'?s personal)\b/i.test(
       normalizar(t)
     );
-  const mNombre = t.match(/(?:a nombre de|mi nombre es|nombre)\s*[:\-]?\s*([^,;]+)/i);
+  const mNombre = t.match(/(?:a nombre de|mi nombre es|my name is|soy|nombre)\s*[:\-]?\s*([^,;]+)/i);
   const mComp = t.match(/(?:compa[ñn][ií]a|empresa|negocio|company)\s*(?:es|se llama)?\s*[:\-]?\s*(.+)$/i);
   if (mComp && !esParticular) out.compania = limpiarNombre(mComp[1]);
   if (mNombre) {
@@ -486,6 +693,203 @@ function extraerPago(raw) {
 }
 
 /**
+ * ¿La respuesta es solo relleno («ok», «sí», «va», «mmm no sé»…)?
+ * Eso NUNCA es un dato válido de fecha, hora, nombre, compañía ni
+ * mix: antes el bot anotaba «ok» como fecha y el cliente quedaba
+ * atrapado en un bucle.
+ */
+const PALABRAS_RELLENO = new Set([
+  'ok', 'okay', 'si', 'va', 'bueno', 'bien', 'sale', 'orale', 'dale',
+  'yes', 'yeah', 'yep', 'aja', 'mmm', 'hmm', 'no', 'se', 'eh', 'ah',
+]);
+function esRespuestaVaga(texto) {
+  const t = normalizar(texto)
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!t) return true;
+  const tokens = t.split(' ');
+  return tokens.length <= 3 && tokens.every((tok) => PALABRAS_RELLENO.has(tok));
+}
+
+/** ¿El texto parece un mix de concreto? (para no anotar «gracias» como mix). */
+function pareceMix(texto) {
+  if (/\d/.test(texto)) return true;
+  return /\b(mix|mezcla|psi|libras|resistencia|high early|reforzado|fibra|fiber)\b/i.test(
+    normalizar(texto)
+  );
+}
+
+/** ¿El mensaje es una CORRECCIÓN de un dato ya dado? («mejor 15 yardas», «eran 12»…). */
+function esCorreccion(texto) {
+  const t = normalizar(texto);
+  return /\b(mejor|eran|en realidad|perdon|correccion|me equivoque|cambialo|quise decir|actually|i meant)\b/.test(t);
+}
+
+/**
+ * ¿El cliente está CANCELANDO? («ya no necesito nada», «cancela»,
+ * «olvídalo», «mejor no», «never mind»…). OJO: «mejor no» cancela,
+ * pero «mejor 15 yardas» es corrección — por eso «mejor no» solo
+ * cuenta si es el mensaje completo o casi.
+ */
+function esCancelacion(texto) {
+  const t = normalizar(texto).replace(/\s+/g, ' ').trim();
+  if (
+    /\b(ya no necesito|ya no quiero|no lo necesito|no necesito|ya no lo ocupo|ya no me interesa|cancela|cancelar|cancel|olvidalo|olvida eso|olvidenlo|never mind|nevermind|forget it|don'?t need|no longer need)\b/.test(t)
+  ) {
+    return true;
+  }
+  if (t === 'ya no' || t === 'mejor no') return true;
+  if (/\bya no\b/.test(t) && t.length <= 30) return true;
+  if (/^mejor no\b/.test(t) && t.length <= 30) return true;
+  return false;
+}
+
+/** Despedida amable al cancelar (el cliente cerró la conversación). */
+function despedidaCancelacion(idioma) {
+  return idioma === 'en'
+    ? "Got it, no problem 🙏 We'll leave it here for now. Whenever you need concrete, we're here to help. Have a great day!"
+    : 'Entendido, sin problema 🙏 Lo dejamos aquí por ahora. Cuando necesite concreto, aquí estamos para servirle. ¡Que tenga un excelente día!';
+}
+
+/**
+ * Preguntas frecuentes sueltas que el bot debe responder sin
+ * guardarlas como dato del flujo. Solo cuentan si suenan a
+ * PREGUNTA (para no robarle el dato a «quiero concreto con bomba»).
+ * Devuelve el id de intent FAQ o null.
+ */
+function detectarFAQ(texto) {
+  const t = normalizar(texto);
+  const suenaPregunta =
+    /\?/.test(texto) ||
+    /^(cual|cuanto|cuanta|cuantos|que|como|tienen|tiene|hay|aceptan|acepta|puedo|se puede|do|does|can|what|how)\b/.test(t);
+  if (!suenaPregunta) return null;
+  if (
+    /\bacepta(n)?\b[^.?!]*\b(tarjeta|zelle|pago|debito|credito|card)\b/.test(t) ||
+    /\b(formas?|metodos?) de pago\b/.test(t) ||
+    /\bpuedo pagar con\b/.test(t) ||
+    /\bdo you accept\b/.test(t) ||
+    /\bhow can i pay\b/.test(t)
+  ) {
+    return 'faq_pagos';
+  }
+  if (/\bminimo\b/.test(t) || /\bminimum\b/.test(t)) return 'faq_minimo';
+  if (/\bbomba\b/.test(t) || /\bpump\b/.test(t)) return 'faq_bomba';
+  return null;
+}
+
+// ---- Cobertura por ciudad (DFW): confirmar «Sí llegamos a X» ----
+const CIUDADES_DFW = {
+  'fort worth': 'Fort Worth', 'grand prairie': 'Grand Prairie',
+  'farmers branch': 'Farmers Branch', 'north richland hills': 'North Richland Hills',
+  'highland village': 'Highland Village', 'flower mound': 'Flower Mound',
+  'lake dallas': 'Lake Dallas', 'the colony': 'The Colony',
+  'little elm': 'Little Elm', 'cedar hill': 'Cedar Hill',
+  'red oak': 'Red Oak', dallas: 'Dallas', arlington: 'Arlington',
+  irving: 'Irving', garland: 'Garland', plano: 'Plano',
+  mesquite: 'Mesquite', carrollton: 'Carrollton', richardson: 'Richardson',
+  lewisville: 'Lewisville', allen: 'Allen', frisco: 'Frisco',
+  mckinney: 'McKinney', denton: 'Denton', coppell: 'Coppell',
+  euless: 'Euless', bedford: 'Bedford', hurst: 'Hurst', keller: 'Keller',
+  southlake: 'Southlake', grapevine: 'Grapevine', mansfield: 'Mansfield',
+  burleson: 'Burleson', desoto: 'DeSoto', duncanville: 'Duncanville',
+  lancaster: 'Lancaster', waxahachie: 'Waxahachie', midlothian: 'Midlothian',
+  ennis: 'Ennis', weatherford: 'Weatherford', azle: 'Azle',
+  saginaw: 'Saginaw', haltom: 'Haltom City', watauga: 'Watauga',
+  prosper: 'Prosper', celina: 'Celina', anna: 'Anna', melissa: 'Melissa',
+  rockwall: 'Rockwall', rowlett: 'Rowlett', wylie: 'Wylie',
+  sachse: 'Sachse', murphy: 'Murphy', corinth: 'Corinth',
+  sanger: 'Sanger', decatur: 'Decatur', cleburne: 'Cleburne',
+};
+/** Si el mensaje nombra una ciudad del área DFW, devuelve su nombre bonito. */
+function detectarCiudad(texto) {
+  const t = ` ${normalizar(texto)} `;
+  const claves = Object.keys(CIUDADES_DFW).sort((a, b) => b.length - a.length);
+  for (const k of claves) {
+    if (t.includes(` ${k} `) || t.includes(` ${k},`) || t.includes(` ${k}.`) || t.includes(` ${k}?`)) {
+      return CIUDADES_DFW[k];
+    }
+  }
+  return null;
+}
+/** ¿El mensaje PREGUNTA por cobertura nombrando una ciudad? Devuelve la ciudad o null. */
+function preguntaCoberturaCiudad(texto) {
+  const ciudad = detectarCiudad(texto);
+  if (!ciudad) return null;
+  const t = normalizar(texto);
+  if (/\b(llegan|entregan|cubren|van a|deliver|cover|go to|reach)\b/.test(t)) return ciudad;
+  return null;
+}
+function lineaCiudad(ciudad, idioma) {
+  return idioma === 'en'
+    ? `Yes! We do deliver to *${ciudad}* 🏗️`
+    : `¡Claro! Sí llegamos a *${ciudad}* 🏗️`;
+}
+
+/** ¿El cliente dice que no sabe cuántas yardas necesita? */
+function esNoSabeYardas(texto) {
+  const t = normalizar(texto).replace(/\s+/g, ' ').trim();
+  if (t === 'no se') return true;
+  return (
+    /\bno se\b[^.?!]*\byardas?\b/.test(t) ||
+    /\bno tengo idea\b/.test(t) ||
+    /\bdon'?t know\b[^.?!]*\byards?\b/.test(t) ||
+    /\bnot sure\b[^.?!]*\byards?\b/.test(t)
+  );
+}
+function lineaNoSabeYardas(idioma) {
+  return idioma === 'en'
+    ? "No problem! 📐 We can figure it out from the measurements of your job: tell me the *length* and *width* in feet and the *thickness* in inches (4 is standard). For example: “20 by 30 feet, 4 inches thick”."
+    : '¡Sin problema! 📐 Se lo calculamos con las medidas de su trabajo: dígame el *largo* y el *ancho* en pies y el *grosor* en pulgadas (lo normal son 4). Por ejemplo: «20 por 30 pies, de 4 pulgadas».';
+}
+function lineaMedidas(m, idioma) {
+  return idioma === 'en'
+    ? `With those measurements (${m.largo} × ${m.ancho} ft and ${m.grosor} inches thick) that comes to about *${m.calculado} yards*, already including the 10% extra 📐 I wrote them down; if the thickness is different, tell me and I'll adjust it.`
+    : `Con esas medidas (${m.largo} × ${m.ancho} pies y ${m.grosor} pulgadas de grosor) serían unas *${m.calculado} yardas*, ya con el 10% extra 📐 Quedan anotadas; si el grosor es otro, dígamelo y lo ajustamos.`;
+}
+
+/**
+ * Captura ADELANTADA de nombre/compañía cuando el cliente los da
+ * sin que se le estén pidiendo («…, soy Juan Pérez, particular»):
+ * solo con marcadores claros, para no capturar cualquier texto.
+ */
+function extraerNombreAdelantado(raw) {
+  const out = {};
+  const mN = raw.match(
+    /(?:^|[,;\n]\s*|\s)(?:soy|mi nombre es|a nombre de|my name is)\s+([^,;\n]+)/i
+  );
+  if (mN) {
+    const stop = new Set([
+      'de', 'en', 'para', 'con', 'y', 'pago', 'particular', 'necesito',
+      'quiero', 'the', 'in', 'at', 'from',
+    ]);
+    const tokens = mN[1].trim().split(/\s+/);
+    const nombreTokens = [];
+    for (const tok of tokens) {
+      const limpio = tok.replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ.'-]/g, '');
+      if (!limpio || stop.has(normalizar(limpio)) || nombreTokens.length >= 3) break;
+      nombreTokens.push(limpio);
+    }
+    if (nombreTokens.length) out.nombre = limpiarNombre(nombreTokens.join(' '));
+  }
+  if (
+    /\b(particular|no tengo compan\w*|no tengo empresa|no company|just personal|es personal)\b/i.test(
+      normalizar(raw)
+    )
+  ) {
+    out.compania = 'Particular';
+  } else {
+    const mC = raw.match(
+      /(?:compa[ñn][ií]a|empresa|negocio|company)\s*(?:es|se llama|is)\s*[:\-]?\s*([^,;\n]+)/i
+    );
+    if (mC) out.compania = limpiarNombre(mC[1]);
+  }
+  if (out.nombre === '') delete out.nombre;
+  if (out.compania === '') delete out.compania;
+  return out;
+}
+
+/**
  * Extrae del mensaje del cliente los datos de la orden que vengan
  * escritos. `paso` es el dato que el bot está pidiendo (si hay flujo):
  * las respuestas cortas se interpretan como ese dato.
@@ -495,9 +899,12 @@ function extraerDatos(texto, paso) {
   const raw = (texto || '').trim();
   const d = {};
   if (!raw) return d;
+  const correccion = esCorreccion(raw);
+  if (correccion) d.correccion = true;
+  const vaga = esRespuestaVaga(raw);
 
   // --- Yardas (+ plus) ---
-  const mYds = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:yds?|yardas?)\b/i);
+  const mYds = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:yds?|yards?|yardas?)\b/i);
   if (mYds) {
     d.yardas = {
       cantidad: mYds[1].replace(',', '.'),
@@ -507,6 +914,31 @@ function extraerDatos(texto, paso) {
     const mNum = raw.match(/^[^0-9]*(\d+(?:[.,]\d+)?)[^0-9]*$/);
     if (mNum) {
       d.yardas = { cantidad: mNum[1].replace(',', '.'), plus: /\bplus\b/i.test(raw) };
+    }
+  }
+
+  // --- Medidas → cálculo de yardas (largo × ancho × grosor, +10%) ---
+  // Cuando el cliente no sabe las yardas y da las medidas del
+  // trabajo («20 por 30 pies, de 4 pulgadas»), se calculan como en
+  // la calculadora del sitio: volumen en pies³ / 27, con 10% extra,
+  // redondeado a media yarda. Sin grosor se usa el normal: 4".
+  if (!d.yardas) {
+    const mMed = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:x|por|\*)\s*(\d+(?:[.,]\d+)?)/i);
+    if (mMed) {
+      const largo = parseFloat(mMed[1].replace(',', '.'));
+      const ancho = parseFloat(mMed[2].replace(',', '.'));
+      const mGrosor =
+        raw.match(/(\d+(?:[.,]\d+)?)\s*(?:pulgadas|inches|de grosor)/i) ||
+        raw.match(/grosor(?:\s+de)?\s*(\d+(?:[.,]\d+)?)/i) ||
+        raw.match(/\b(\d+(?:[.,]\d+)?)\s*(?:in\b|")/i);
+      const grosor = mGrosor ? parseFloat(mGrosor[1].replace(',', '.')) : 4;
+      if (largo > 0 && ancho > 0 && grosor > 0 && grosor <= 24) {
+        const bruto = ((largo * ancho * (grosor / 12)) / 27) * 1.1;
+        const redondeo = Math.max(1, Math.round(bruto * 2) / 2);
+        const cantidad = Number.isInteger(redondeo) ? String(redondeo) : String(redondeo);
+        d.yardas = { cantidad, plus: false };
+        d.medidas = { largo, ancho, grosor, calculado: cantidad };
+      }
     }
   }
 
@@ -527,12 +959,16 @@ function extraerDatos(texto, paso) {
   const mFecha =
     raw.match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/) ||
     raw.match(/\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i) ||
-    raw.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo/i);
+    raw.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i);
   if (mFecha) {
     d.fecha = mFecha[0].trim();
-  } else if (paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw) && !esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
+  } else if (
+    paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw) &&
+    !esPreguntaPrecio(raw) && !preguntaSobreAire(raw) && !correccion && !vaga
+  ) {
     // Respuesta corta al «¿para qué día?»: se toma tal cual
-    // (una pregunta de precio jamás se toma como fecha).
+    // (una pregunta de precio jamás se toma como fecha, y un
+    // «ok» tampoco es una fecha).
     d.fecha = raw.replace(/[. ]+$/, '');
   }
 
@@ -546,23 +982,30 @@ function extraerDatos(texto, paso) {
   if (aire) d.aire = aire;
 
   // --- Mix ---
-  // La resistencia se pide como «4000 psi», «3000 libras» o el número
-  // solo («cemento 4000»): las tres formas se entienden como el mix.
-  // El número solo NO se captura si el mensaje parece una dirección
-  // (podría ser el número de la calle).
+  // La resistencia se pide como «4000 psi», «3000 libras», «de
+  // 3000» o el número solo («cemento 4000»): todas se entienden
+  // como el mix. El número solo NO se captura si el mensaje parece
+  // una dirección (podría ser el número de la calle), pero «de
+  // 3000» o «3000 con aire» SÍ se capturan aunque venga la
+  // dirección en el mismo mensaje (antes ese mix se perdía).
+  const NUMS_MIX = '2500|3000|3500|4000|4500|5000|5500|6000';
   const mPsi =
     raw.match(/(\d{3,5})\s*(?:psi|libras)\b/i) ||
-    (!esDireccion ? raw.match(/\b(2500|3000|3500|4000|4500|5000|5500|6000)\b/) : null);
+    raw.match(new RegExp(`\\bde\\s+(${NUMS_MIX})\\b`, 'i')) ||
+    raw.match(new RegExp(`\\b(${NUMS_MIX})\\s+(?:con|sin)\\s+aire\\b`, 'i')) ||
+    raw.match(new RegExp(`\\b(?:mix|mezcla)\\s*(?:de\\s*)?(${NUMS_MIX})\\b`, 'i')) ||
+    (!esDireccion ? raw.match(new RegExp(`\\b(${NUMS_MIX})\\b`)) : null);
   if (mPsi) {
     d.mix = `${mPsi[1]} psi`;
-  } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora) {
-    // En el paso del mix, todo el mensaje ES la descripción del mix
-    // (ej. «High early mix / mix 275-P»), tal como la dio el cliente,
-    // sin la frase del aire (ese dato va aparte). Una pregunta de
-    // precio («¿cuánto sale?») o sobre el aire («¿qué es el aire?»)
-    // NO es un mix: no se captura.
+  } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora && !correccion && !vaga) {
+    // En el paso del mix, el mensaje puede ser la descripción del
+    // mix (ej. «High early mix / mix 275-P»), tal como la dio el
+    // cliente, sin la frase del aire (ese dato va aparte). Pero
+    // SOLO si parece un mix de verdad: «gracias» o texto basura
+    // NO se anotan como mix (se re-pregunta con ejemplos). Una
+    // pregunta de precio o sobre el aire tampoco es un mix.
     const mixTexto = esPreguntaPrecio(raw) || preguntaSobreAire(raw) ? '' : quitarFrasesAire(raw);
-    if (mixTexto) d.mix = mixTexto.replace(/[. ]+$/, '');
+    if (mixTexto && pareceMix(mixTexto)) d.mix = mixTexto.replace(/[. ]+$/, '');
   } else {
     const mMix = raw.match(/\b(?:mix|mezcla)\b[^,.;]*/i);
     if (mMix) d.mix = quitarFrasesAire(mMix[0]).replace(/[. ]+$/, '');
@@ -579,7 +1022,9 @@ function extraerDatos(texto, paso) {
     !d.fecha &&
     !d.hora &&
     !esPreguntaPrecio(raw) &&
-    !preguntaSobreAire(raw)
+    !preguntaSobreAire(raw) &&
+    !correccion &&
+    !vaga
   ) {
     // Respuesta corta al «¿cuál es la dirección?»: se toma tal cual
     // (conserva saltos de línea, ej. la línea «Estados Unidos»).
@@ -587,47 +1032,118 @@ function extraerDatos(texto, paso) {
     d.direccion = raw.replace(/[. ]+$/, '');
   }
 
-  // --- Nombre y compañía (pasos finales, ya con la orden completa) ---
-  // Se piden UNO POR VEZ (primero el nombre, después la compañía),
-  // pero si el cliente da los dos juntos se capturan ambos y no se
-  // le vuelve a preguntar lo que ya dio.
-  // Una pregunta de precio o sobre el aire jamás se toma como nombre.
+  // --- Nombre y compañía ---
+  // Se piden UNO POR VEZ al final (primero el nombre, después la
+  // compañía), pero si el cliente da los dos juntos se capturan
+  // ambos. Un «ok» jamás es un nombre. Y en CUALQUIER paso, si el
+  // cliente da su nombre/compañía por adelantado con marcadores
+  // claros («soy Juan Pérez, particular»), se guardan y no se le
+  // vuelven a preguntar.
   if ((paso === 'nombre' || paso === 'compania') && !esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
-    const cli = extraerNombreCompania(raw);
-    if (cli.nombre) d.nombre = cli.nombre;
-    if (cli.compania) d.compania = cli.compania;
+    const hayMarcador =
+      /a nombre de|mi nombre es|my name is|nombre\s*[:\-]|compa[ñn]|empresa|negocio|company|particular|soy\b/i.test(raw);
+    if (!vaga && (!correccion || hayMarcador)) {
+      const cli = extraerNombreCompania(raw);
+      if (cli.nombre) d.nombre = cli.nombre;
+      if (cli.compania) d.compania = cli.compania;
+    }
+  } else if (!esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
+    const adelantado = extraerNombreAdelantado(raw);
+    if (adelantado.nombre) d.nombre = adelantado.nombre;
+    if (adelantado.compania) d.compania = adelantado.compania;
   }
 
-  // --- Forma de pago (último paso, después de la compañía) ---
-  // Si dice solo «tarjeta»/«card» sin aclarar, se marca genérica
-  // (d.pagoGenerica): el flujo pregunta «¿Débito o crédito?» una
-  // sola vez antes de guardarla como «Tarjeta».
+  // --- Forma de pago ---
+  // En el paso del pago: si dice solo «tarjeta»/«card» sin
+  // aclarar, se marca genérica (d.pagoGenerica) y el flujo
+  // pregunta «¿Débito o crédito?» una sola vez. En cualquier otro
+  // paso, una forma de pago ESPECÍFICA dada por adelantado
+  // («pago por zelle») se guarda y no se vuelve a preguntar.
+  const pagoDetectado = extraerPago(raw);
   if (paso === 'pago' && !esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
-    const pago = extraerPago(raw);
-    if (pago === 'Tarjeta') d.pagoGenerica = true;
-    else if (pago) d.pago = pago;
+    if (pagoDetectado === 'Tarjeta') d.pagoGenerica = true;
+    else if (pagoDetectado) d.pago = pagoDetectado;
+  } else if (
+    pagoDetectado &&
+    pagoDetectado !== 'Tarjeta' &&
+    /\b(pago|pagar|pay|zelle|debito|debit|credito|credit)\b/i.test(normalizar(raw))
+  ) {
+    d.pago = pagoDetectado;
   }
 
   return d;
 }
 
-/** Fusiona los datos detectados en el flujo y devuelve los campos nuevos. */
+/**
+ * Fusiona los datos detectados en el flujo. Devuelve
+ * { aplicados, corregidos }: los datos nuevos y los que eran una
+ * CORRECCIÓN de un dato ya dado («mejor 15 yardas», «mejor sin
+ * aire»): una corrección actualiza el dato correcto — jamás se
+ * guarda como el dato del paso actual — y el bot la confirma.
+ */
 function fusionarDatos(flow, d) {
-  const nuevos = [];
+  const aplicados = [];
+  const corregidos = [];
   for (const campo of ['yardas', 'mix', 'aire', 'direccion', 'fecha', 'hora', 'slump', 'nombre', 'compania', 'pago']) {
-    if (d[campo] && !flow.datos[campo]) {
+    if (!d[campo]) continue;
+    const habia = flow.datos[campo];
+    if (!habia) {
       flow.datos[campo] = d[campo];
-      nuevos.push(campo);
-    } else if (d[campo] && campo === 'yardas') {
-      flow.datos.yardas = d.yardas; // una corrección de cantidad manda
+      aplicados.push(campo);
+    } else if (JSON.stringify(habia) !== JSON.stringify(d[campo])) {
+      if (campo === 'yardas' || d.correccion) {
+        flow.datos[campo] = d[campo];
+        corregidos.push(campo);
+      }
     }
   }
   if (d.inspeccion) flow.datos.inspeccion = true;
-  return nuevos;
+  return { aplicados, corregidos };
+}
+
+/** Muestra el aire en el idioma del cliente (el dato guardado es el del dueño). */
+function aireDisplay(aire, idioma) {
+  if (idioma !== 'en') return aire;
+  return aire === 'con aire' ? 'with air' : aire === 'no aire' ? 'no air' : aire;
+}
+/** Muestra la forma de pago en el idioma del cliente. */
+function pagoDisplay(pago, idioma) {
+  if (idioma !== 'en') return pago;
+  if (pago === 'Tarjeta de débito') return 'Debit card';
+  if (pago === 'Tarjeta de crédito') return 'Credit card';
+  return pago;
 }
 
 /** Confirmación breve de un dato recién capturado. */
-function confirmacionDe(campo, datos) {
+function confirmacionDe(campo, datos, idioma = 'es') {
+  if (idioma === 'en') {
+    switch (campo) {
+      case 'yardas':
+        return `got it: *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
+      case 'mix':
+        return `got the mix: *${datos.mix}*`;
+      case 'aire':
+        return `noted: concrete *${aireDisplay(datos.aire, idioma)}*`;
+      case 'direccion':
+        return `got the *address*`;
+      case 'fecha':
+        return `noted the day: *${datos.fecha}*`;
+      case 'hora':
+        return `noted the time: *${datos.hora}*`;
+      case 'slump':
+        return `noted the slump: *${datos.slump}*`;
+      case 'nombre':
+        return `noted the name: *${datos.nombre}*`;
+      case 'compania':
+        return datos.compania === 'Particular'
+          ? 'noted: *personal* (no company)'
+          : `noted the company: *${datos.compania}*`;
+      case 'pago':
+        return `noted the payment: *${pagoDisplay(datos.pago, idioma)}*`;
+      default:
+        return 'noted';
+    }
+  }
   switch (campo) {
     case 'yardas':
       return `anotadas las *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
@@ -656,6 +1172,60 @@ function confirmacionDe(campo, datos) {
   }
 }
 
+/** Confirmación de un dato CORREGIDO por el cliente («lo dejo en…»). */
+function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
+  if (idioma === 'en') {
+    switch (campo) {
+      case 'yardas':
+        return `changed to *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
+      case 'mix':
+        return `changed to the mix: *${datos.mix}*`;
+      case 'aire':
+        return `changed to: concrete *${aireDisplay(datos.aire, idioma)}*`;
+      case 'direccion':
+        return `changed to the address: *${datos.direccion}*`;
+      case 'fecha':
+        return `changed to the day: *${datos.fecha}*`;
+      case 'hora':
+        return `changed to the time: *${datos.hora}*`;
+      case 'nombre':
+        return `changed to the name: *${datos.nombre}*`;
+      case 'compania':
+        return `changed to the company: *${datos.compania}*`;
+      case 'pago':
+        return `changed to the payment: *${pagoDisplay(datos.pago, idioma)}*`;
+      default:
+        return 'updated';
+    }
+  }
+  switch (campo) {
+    case 'yardas':
+      return `lo dejo en *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
+    case 'mix':
+      return `lo dejo en el mix: *${datos.mix}*`;
+    case 'aire':
+      return `lo dejo: concreto *${datos.aire}*`;
+    case 'direccion':
+      return `lo dejo en la dirección: *${datos.direccion}*`;
+    case 'fecha':
+      return `lo dejo para el día: *${datos.fecha}*`;
+    case 'hora':
+      return `lo dejo a la hora: *${datos.hora}*`;
+    case 'slump':
+      return `lo dejo en el slump: *${datos.slump}*`;
+    case 'nombre':
+      return `lo dejo a nombre de: *${datos.nombre}*`;
+    case 'compania':
+      return datos.compania === 'Particular'
+        ? 'lo dejo como *particular* (sin compañía)'
+        : `lo dejo en la compañía: *${datos.compania}*`;
+    case 'pago':
+      return `lo dejo en el pago: *${datos.pago}*`;
+    default:
+      return 'lo dejo anotado';
+  }
+}
+
 /**
  * ¿El mensaje es SOLO un saludo? («hola», «buenas», «hello»,
  * «buenas tardes», «hola buenas»…). Cuando un cliente retoma una
@@ -672,6 +1242,7 @@ function esSaludoPuro(texto) {
   if (!t) return false;
   const frases = [
     'buenas noches', 'buenas tardes', 'buenos dias', 'buen dia',
+    'good afternoon', 'good evening', 'good morning',
     'que tal', 'hola', 'buenas', 'hello', 'hi', 'hey', 'saludos',
   ];
   let resto = t;
@@ -693,20 +1264,27 @@ function esSaludoPuro(texto) {
 
 /**
  * ¿El cliente está preguntando el PRECIO? Para el dueño, el
- * «¿cuánto?» del cliente siempre es el precio. Se excluyen las
- * preguntas de duración («cuánto tarda/tiempo/demora…»).
+ * «¿cuánto?» del cliente es el precio — EXCEPTO cuando pregunta
+ * por la LLEGADA («¿en cuánto llega…?», «¿cuánto tarda…?»): eso
+ * es estatus de entrega, no precio.
  */
 function esPreguntaPrecio(texto) {
   const t = normalizar(texto);
-  if (/\bhow much\b/.test(t)) return true;
-  if (/\bprecio(s)?\b/.test(t) || /\bcosto\b/.test(t) || /\btarifa\b/.test(t)) return true;
-  if (/\bcuanto\b/.test(t) && !/\bcuanto\s+(tiempo|tarda|tardan|demora|dura|duran)\b/.test(t)) return true;
+  const precioExplicito =
+    /\b(precio|precios|price|prices|costo|cost|tarifa|cuesta|cuestan|how much|charge|cuanto cuesta|cuanto sale|cuanto vale)\b/.test(t);
+  if (precioExplicito) return true;
+  const llegada =
+    /\b(llega|llegan|llegue|llegada|viene|vienen|en camino|tarda|tardan|demora|demoran|dura|duran|tiempo)\b/.test(t);
+  if (llegada) return false;
+  if (/\bcuanto\b/.test(t)) return true;
   return false;
 }
 
 /** Respuesta corta sobre el precio: jamás se da un número. */
 const LINEA_PRECIO =
-  'El precio depende de la planta y del mix 🏗️ Con los datos de su orden se lo confirmamos enseguida.';
+  'El precio depende de la planta y del mix. Con los datos de su orden se lo confirmamos enseguida.';
+const LINEA_PRECIO_EN =
+  "Price depends on the plant and the mix. With your order details we'll confirm it right away.";
 
 /**
  * ¿El cliente pregunta QUÉ ES el aire o para qué sirve? Mucha gente
@@ -744,31 +1322,106 @@ const EXPLICACION_AIRE_EN =
   "it's used mostly for outdoor work like driveways, patios and sidewalks. " +
   "For indoor floors or very smooth finishes, it's normally ordered without air, because it comes out stronger and smoother.";
 
-/** La pregunta por el dato que falta, en el orden del dueño. */
-function preguntaPara(paso, datos) {
+/**
+ * La pregunta por el dato que falta, en el orden del dueño.
+ * `conEjemplo` agrega un ejemplo concreto (se usa cuando el
+ * cliente no atinó la respuesta: re-preguntar UNA vez con
+ * ejemplos, en vez de repetir la misma pregunta en bucle).
+ */
+function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
+  if (idioma === 'en') {
+    switch (paso) {
+      case 'yardas':
+        return conEjemplo
+          ? 'How many yards do you need? For example: 10 yards, or 10 yards plus if you might need a little more.'
+          : 'How many yards do you need?';
+      case 'mix':
+        if (datos.mix && !datos.aire) {
+          return conEjemplo
+            ? 'Does the concrete need air or no air? Air helps against cold weather in outdoor work; indoor floors are usually ordered without air.'
+            : 'And does the concrete need it with air or no air?';
+        }
+        if (!datos.mix && datos.aire) {
+          return conEjemplo
+            ? 'What mix or strength (PSI) do you need? For example: 3000 psi or 4000 psi.'
+            : 'What mix or strength (PSI) do you need?';
+        }
+        return conEjemplo
+          ? 'What mix or strength (PSI) do you need? For example: 3000 psi or 4000 psi. And does it need air or no air?'
+          : 'What mix or strength (PSI) do you need? And does it need air or no air?';
+      case 'direccion':
+        return conEjemplo
+          ? "What's the full address of the job site? For example: 4500 Main St, Dallas, TX."
+          : "What's the full address of the job site?";
+      case 'fecha':
+        return datos.hora
+          ? conEjemplo
+            ? 'What day do you need it? For example: tomorrow, this Friday, or 10/25.'
+            : 'What day do you need it?'
+          : conEjemplo
+            ? 'What day do you need it, and at what time at the job site? For example: tomorrow at 7 am.'
+            : 'What day do you need it, and at what time at the job site?';
+      case 'hora':
+        return conEjemplo
+          ? 'At what time do you need it at the job site? For example: 7 am or 10:30 am.'
+          : 'At what time do you need it at the job site?';
+      case 'nombre':
+        return conEjemplo
+          ? 'Almost done 🙏 Whose name should we put on the order? For example: John Smith.'
+          : 'Almost done 🙏 Whose name should we put on the order?';
+      case 'compania':
+        return "And what's the name of your company? If you don't have one and it's personal, just let me know and we'll leave it that way.";
+      case 'pago':
+        return 'How will you pay: Zelle, debit card or credit card?';
+      default:
+        return '';
+    }
+  }
   switch (paso) {
     case 'yardas':
-      return '¿Cuántas yardas necesita?';
+      return conEjemplo
+        ? '¿Cuántas yardas necesita? Por ejemplo: 10 yardas, o 10 yardas plus si puede necesitar un poco más.'
+        : '¿Cuántas yardas necesita?';
     case 'mix':
       // Con el mix se pregunta también el aire («aire o no aire»);
       // si ya está uno de los dos, se pregunta solo el que falta.
-      if (datos.mix && !datos.aire) return '¿Y el concreto va con aire o no aire?';
-      if (!datos.mix && datos.aire) return '¿Qué mix o resistencia (PSI) necesita?';
-      return '¿Qué mix o resistencia (PSI) necesita? ¿Y el concreto va con aire o no aire?';
+      if (datos.mix && !datos.aire) {
+        return conEjemplo
+          ? '¿El concreto va con aire o no aire? El aire ayuda contra el frío en trabajos de exterior; para interiores suele pedirse sin aire.'
+          : '¿Y el concreto va con aire o no aire?';
+      }
+      if (!datos.mix && datos.aire) {
+        return conEjemplo
+          ? '¿Qué mix o resistencia (PSI) necesita? Por ejemplo: 3000 psi o 4000 psi.'
+          : '¿Qué mix o resistencia (PSI) necesita?';
+      }
+      return conEjemplo
+        ? '¿Qué mix o resistencia (PSI) necesita? Por ejemplo: 3000 psi o 4000 psi. ¿Y el concreto va con aire o no aire?'
+        : '¿Qué mix o resistencia (PSI) necesita? ¿Y el concreto va con aire o no aire?';
     case 'direccion':
-      return '¿Cuál es la dirección completa de la obra?';
+      return conEjemplo
+        ? '¿Cuál es la dirección completa de la obra? Por ejemplo: 4500 Main St, Dallas, TX.'
+        : '¿Cuál es la dirección completa de la obra?';
     case 'fecha':
       // Si ya dio la hora, solo falta el día; si no, se piden juntos,
       // que es como el dueño pregunta («la hora» = día y hora).
       return datos.hora
-        ? '¿Para qué día lo necesita?'
-        : '¿Para qué día lo necesita y a qué hora en la obra?';
+        ? conEjemplo
+          ? '¿Para qué día lo necesita? Por ejemplo: mañana, este viernes o 10/25/26.'
+          : '¿Para qué día lo necesita?'
+        : conEjemplo
+          ? '¿Para qué día lo necesita y a qué hora en la obra? Por ejemplo: mañana a las 7 am.'
+          : '¿Para qué día lo necesita y a qué hora en la obra?';
     case 'hora':
-      return '¿A qué hora lo necesita en la obra?';
+      return conEjemplo
+        ? '¿A qué hora lo necesita en la obra? Por ejemplo: 7 am o 10:30 am.'
+        : '¿A qué hora lo necesita en la obra?';
     case 'nombre':
       // Nombre y compañía se piden UNO POR VEZ (orden del dueño):
       // primero solo el nombre…
-      return 'Ya casi terminamos 🙏 ¿A nombre de quién queda la orden?';
+      return conEjemplo
+        ? 'Ya casi terminamos 🙏 ¿A nombre de quién queda la orden? Por ejemplo: Juan Pérez.'
+        : 'Ya casi terminamos 🙏 ¿A nombre de quién queda la orden?';
     case 'compania':
       // …y en cuanto da el nombre, solo la compañía.
       return '¿Y cuál es el nombre de su compañía? Si no tiene compañía y es particular, dígamelo y así lo dejamos.';
@@ -808,10 +1461,13 @@ function fechaCortaEntrega(fechaTexto) {
     return `${+mNum[1]}/${+mNum[2]}/${yy}`;
   }
   if (/pasado manana/.test(t)) return fmt(base + 2 * 86400000);
-  if (/\bmanana\b/.test(t)) return fmt(base + 86400000);
-  if (/\bhoy\b/.test(t)) return fmt(base);
+  if (/\bmanana\b/.test(t) || /\btomorrow\b/.test(t)) return fmt(base + 86400000);
+  if (/\bhoy\b/.test(t) || /\btoday\b/.test(t)) return fmt(base);
 
-  const dias = { domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6 };
+  const dias = {
+    domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6,
+    sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+  };
   for (const [nombreDia, num] of Object.entries(dias)) {
     if (new RegExp(`\\b${nombreDia}\\b`).test(t)) {
       const hoyDia = new Date(base).getUTCDay();
@@ -821,11 +1477,19 @@ function fechaCortaEntrega(fechaTexto) {
   const meses = {
     enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
     julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+    january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+    july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
   };
   const mMes = t.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/);
   if (mMes) {
     let ms = Date.UTC(Y, meses[mMes[2]], +mMes[1]);
     if (ms < base) ms = Date.UTC(Y + 1, meses[mMes[2]], +mMes[1]);
+    return fmt(ms);
+  }
+  const mMesEN = t.match(/(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})/);
+  if (mMesEN) {
+    let ms = Date.UTC(Y, meses[mMesEN[1]], +mMesEN[2]);
+    if (ms < base) ms = Date.UTC(Y + 1, meses[mMesEN[1]], +mMesEN[2]);
     return fmt(ms);
   }
   return fmt(base); // no se pudo interpretar: se deja la fecha de hoy
@@ -873,8 +1537,22 @@ function armarConfirmacion(datos, conversacion) {
 }
 
 /** Cierre corto al cliente cuando el flujo queda completo. */
-function resumenCliente(datos, nombre) {
+function resumenCliente(datos, nombre, idioma = 'es') {
   const n = nombre && nombre !== '' ? ` ${nombre}` : '';
+  if (idioma === 'en') {
+    return (
+      `All set${n}! ✅ Your order is registered:\n` +
+      `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
+      `• Mix: ${datos.mix}${datos.aire ? `, ${aireDisplay(datos.aire, idioma)}` : ''}\n` +
+      `• Address: ${datos.direccion}\n` +
+      `• Day: ${datos.fecha} — ${datos.hora}\n` +
+      (datos.pago ? `• Payment: ${pagoDisplay(datos.pago, idioma)}\n` : '') +
+      `\nWe'll confirm price and availability right away. ` +
+      `A specialist will help you right here. 🙏\n` +
+      // Same rule as in Spanish: payment is IN ADVANCE, said once.
+      `Payment is in advance: as soon as your payment is confirmed, we load your order. 🚛`
+    );
+  }
   return (
     `¡Listo${n}! ✅ Ya quedó registrada su orden:\n` +
     `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
@@ -897,19 +1575,66 @@ function resumenCliente(datos, nombre) {
  * Devuelve la decisión de respuesta (mismo formato que decidirRespuesta),
  * con `confirmacionArmada` cuando el flujo se completa.
  */
+/** Prefijos de continuación: se rotan para no repetir el mismo en cada turno. */
+function prefijoContinuacion(flow, idioma) {
+  const turno = flow.turnos || 0;
+  if (idioma === 'en') {
+    const vars =
+      flow.tipo === 'pedido'
+        ? ["Let's keep going with your order", 'Continuing with your order', "Let's continue with your order"]
+        : ["Let's keep going with your quote", 'Continuing with your quote', "Let's continue with your quote"];
+    return vars[turno % vars.length];
+  }
+  const vars =
+    flow.tipo === 'pedido'
+      ? ['Sigamos con su pedido', 'Continuamos con su pedido', 'Seguimos con su pedido', 'Vamos con su pedido']
+      : ['Sigamos con su cotización', 'Continuamos con su cotización', 'Seguimos con su cotización', 'Vamos con su cotización'];
+  return vars[turno % vars.length];
+}
+
+/**
+ * Texto anti-bucle: tras 2 intentos fallidos en el mismo paso, el
+ * bot cambia la redacción, pregunta CON EJEMPLO y ofrece pasar
+ * con un especialista (antes repetía la misma pregunta para
+ * siempre y el cliente quedaba atrapado).
+ */
+function textoEscalado(paso, datos, idioma) {
+  const ejemplo = preguntaPara(paso, datos, idioma, true);
+  return idioma === 'en'
+    ? `Sorry for the back-and-forth 🙏 Let me ask with an example: ${ejemplo}\nOr if you prefer, type *specialist* and a person will help you right away.`
+    : `Disculpe la vuelta 🙏 Mejor se lo pregunto con un ejemplo: ${ejemplo}\nO si prefiere, escriba *especialista* y le atiende una persona enseguida.`;
+}
+
 function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const flow = conversacion.flow;
+  if (!flow.idioma) flow.idioma = detectarIdioma(textoCliente);
+  const idioma = flow.idioma;
+  flow.turnos = (flow.turnos || 0) + 1;
   const pasoPedido = pasoActual(flow);
-  // RETOMA (regla del dueño): si el cliente vuelve a escribir a
-  // mitad del flujo con un saludo PURO («hola», «buenas», «hello»…),
-  // el saludo NO es un dato: no se captura como mix, dirección,
-  // fecha ni nombre. Solo se vuelve a preguntar el dato que falta,
-  // sin bienvenida ni menú. (Si el mensaje trae saludo Y un dato,
-  // no es saludo puro y el dato sí se captura, como siempre.)
-  const detectados = esSaludoPuro(textoCliente)
-    ? {}
-    : extraerDatos(textoCliente, pasoPedido);
-  const nuevos = fusionarDatos(flow, detectados);
+
+  // Mensajes que NO son un dato del paso actual: saludo puro
+  // (retoma), pregunta frecuente, pregunta de cobertura por
+  // ciudad, o «no sé cuántas yardas» sin medidas. Esos textos
+  // jamás se guardan como mix, dirección, fecha ni nombre.
+  const saludoPuro = esSaludoPuro(textoCliente);
+  const faq = saludoPuro ? null : detectarFAQ(textoCliente);
+  const ciudad = !saludoPuro && !faq ? preguntaCoberturaCiudad(textoCliente) : null;
+  const noSabe = pasoPedido === 'yardas' && !saludoPuro && esNoSabeYardas(textoCliente);
+
+  let detectados = {};
+  let omitirCaptura = saludoPuro || !!faq || !!ciudad;
+  if (!omitirCaptura) {
+    detectados = extraerDatos(textoCliente, pasoPedido);
+    if (noSabe && !detectados.medidas) {
+      // «No sé cuántas yardas» sin medidas: no es un dato; la
+      // respuesta ofrece el cálculo por medidas.
+      detectados = {};
+      omitirCaptura = true;
+    }
+  }
+  const { aplicados: nuevos, corregidos } = omitirCaptura
+    ? { aplicados: [], corregidos: [] }
+    : fusionarDatos(flow, detectados);
 
   // Forma de pago genérica («tarjeta» sin decir débito o crédito):
   // se pregunta «¿Débito o crédito?» UNA sola vez; si el cliente
@@ -935,13 +1660,18 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       db.setConversationFlow(conversacion.id, flow);
       conversacion.flow = flow;
       const partesAire = [];
+      if (corregidos.length) {
+        partesAire.push(
+          `${idioma === 'en' ? 'Got it, updated' : 'Perfecto, lo corrijo'}: ${corregidos.map((c) => confirmacionCorreccionDe(c, flow.datos, idioma)).join('; ')}.`
+        );
+      }
       if (nuevos.length) {
-        partesAire.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos)).join('; ')}.`);
+        partesAire.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
       }
       partesAire.push(idiomaAire === 'en' ? EXPLICACION_AIRE_EN : EXPLICACION_AIRE_ES);
       partesAire.push(
         flow.datos.aire
-          ? preguntaPara(paso, flow.datos)
+          ? preguntaPara(paso, flow.datos, idioma)
           : idiomaAire === 'en'
             ? 'Does your concrete need it with air or no air?'
             : '¿Su concreto lo necesita con aire o no aire?'
@@ -963,34 +1693,87 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     conversacion.flow = null;
     return {
       responder: true,
-      texto: resumenCliente(datos, datos.nombre || conversacion.name),
+      texto: resumenCliente(datos, datos.nombre || conversacion.name, idioma),
       intent: flow.tipo,
       topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
       confirmacionArmada,
     };
   }
+
+  // ---- Anti-bucle: contar intentos fallidos en el MISMO paso ----
+  const huboAvance =
+    nuevos.length > 0 || corregidos.length > 0 || preguntaAclararPago || paso !== pasoPedido;
+  const preguntaLegitima =
+    saludoPuro || !!faq || !!ciudad || (noSabe && !detectados.medidas) ||
+    esPreguntaPrecio(textoCliente) || !!preguntaSobreAire(textoCliente) || !!detectados.medidas;
+  if (huboAvance) {
+    flow.intentos = 0;
+    flow.intentosPaso = paso;
+  } else if (!preguntaLegitima) {
+    if (flow.intentosPaso === paso) flow.intentos = (flow.intentos || 0) + 1;
+    else {
+      flow.intentosPaso = paso;
+      flow.intentos = 1;
+    }
+  }
+  const intentos = flow.intentos || 0;
+  const escalado = intentos >= 2;
   db.setConversationFlow(conversacion.id, flow);
   conversacion.flow = flow;
 
   const partes = [];
   if (esNuevo) {
     partes.push(
-      flow.tipo === 'pedido'
-        ? '¡Perfecto, le tomamos su pedido! 🏗️'
-        : 'Con gusto le ayudamos con su cotización 🏗️'
+      idioma === 'en'
+        ? flow.tipo === 'pedido'
+          ? "Perfect! We'll take your order 🏗️"
+          : 'Happy to help with your quote 🏗️'
+        : flow.tipo === 'pedido'
+          ? '¡Perfecto, le tomamos su pedido! 🏗️'
+          : 'Con gusto le ayudamos con su cotización 🏗️'
+    );
+  }
+  if (corregidos.length) {
+    partes.push(
+      `${idioma === 'en' ? 'Got it, updated' : 'Perfecto, lo corrijo'}: ${corregidos.map((c) => confirmacionCorreccionDe(c, flow.datos, idioma)).join('; ')}.`
     );
   }
   if (nuevos.length) {
-    partes.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos)).join('; ')}.`);
-  } else if (!esNuevo) {
-    partes.push(`Sigamos con ${flow.tipo === 'pedido' ? 'su pedido' : 'su cotización'} 🏗️`);
+    partes.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
+  }
+  if (detectados.medidas) {
+    partes.push(lineaMedidas(detectados.medidas, idioma));
+  } else if (
+    !esNuevo && !nuevos.length && !corregidos.length &&
+    !faq && !ciudad && !noSabe && !escalado
+  ) {
+    partes.push(prefijoContinuacion(flow, idioma));
+  }
+  if (faq) {
+    partes.push(textoEfectivo(faq, conversacion.name, idioma));
+  }
+  if (ciudad) {
+    partes.push(lineaCiudad(ciudad, idioma));
+  }
+  if (noSabe && !detectados.medidas) {
+    partes.push(lineaNoSabeYardas(idioma));
   }
   // Pregunta de precio a mitad del flujo (o al abrirlo): respuesta
   // corta SIN números, y el flujo continúa donde iba.
   if (esPreguntaPrecio(textoCliente)) {
-    partes.push(LINEA_PRECIO);
+    partes.push(idioma === 'en' ? LINEA_PRECIO_EN : LINEA_PRECIO);
   }
-  partes.push(preguntaAclararPago ? '¿Débito o crédito?' : preguntaPara(paso, flow.datos));
+  if (escalado) {
+    partes.push(textoEscalado(paso, flow.datos, idioma));
+  } else {
+    partes.push(
+      preguntaAclararPago
+        ? idioma === 'en'
+          ? 'Debit or credit?'
+          : '¿Débito o crédito?'
+        : preguntaPara(paso, flow.datos, idioma, intentos >= 1)
+    );
+  }
 
   return {
     responder: true,
@@ -1010,10 +1793,98 @@ function abreFlujo(intent, textoCliente) {
   const d = extraerDatos(textoCliente, null);
   if (d.yardas) return true;
   const t = normalizar(textoCliente);
-  return (
+  if (
     /\b(quiero|necesito|ocupo|me urge)\b/.test(t) &&
     /\b(concreto|cemento|semento|hormigon|yarda|yds|cotizacion|mix|mezcla)\b/.test(t)
+  ) {
+    return true;
+  }
+  // Inglés: «I need concrete», «we want 10 yards»…
+  return (
+    /\b(i need|i want|we need|we want|looking for|need|want)\b/.test(t) &&
+    /\b(concrete|cement|yards?|yds)\b/.test(t) &&
+    detectarIdioma(textoCliente) === 'en'
   );
+}
+
+/** Estado inicial de un flujo recién abierto. */
+function flujoNuevo(tipo, textoCliente) {
+  return {
+    tipo,
+    datos: datosVacios(),
+    idioma: detectarIdioma(textoCliente),
+    intentos: 0,
+    intentosPaso: null,
+    turnos: 0,
+  };
+}
+
+/**
+ * Clase de mensaje NO textual, según el tipo que pasa el webhook
+ * o el texto marcador que se guardó («[nota de voz recibida]»…).
+ * Esos textos JAMÁS son un dato del flujo.
+ */
+function claseNoTexto(texto, tipoMensaje) {
+  const tipos = {
+    audio: 'audio', location: 'location', image: 'imagen',
+    video: 'video', document: 'documento', sticker: 'sticker',
+    reaction: 'reaccion', contacts: 'contacto',
+  };
+  if (tipoMensaje && tipos[tipoMensaje]) return tipos[tipoMensaje];
+  if (tipoMensaje && tipoMensaje !== 'text' && tipoMensaje !== 'button' && tipoMensaje !== 'interactive') {
+    return 'otro';
+  }
+  const m = (texto || '').trim().match(/^\[([^\]]+)\]$/);
+  if (m) {
+    const k = normalizar(m[1]);
+    if (k.includes('voz') || k.includes('audio')) return 'audio';
+    if (k.includes('ubic')) return 'location';
+    if (k.includes('imagen') || k.includes('image')) return 'imagen';
+    if (k.includes('video')) return 'video';
+    if (k.includes('documento')) return 'documento';
+    if (k.includes('mensaje tipo')) return 'otro';
+  }
+  return null;
+}
+
+/**
+ * Respuesta a un mensaje que NO es texto: a una nota de voz se le
+ * pide amablemente que lo escriba; a una ubicación, la dirección
+ * en texto; a un archivo, que lo escriba. Nunca se guarda como
+ * dato y el flujo (si hay) sigue donde iba.
+ */
+function responderNoTexto(conversacion, clase) {
+  const flow = conversacion.flow && conversacion.flow.datos ? conversacion.flow : null;
+  const idioma = (flow && flow.idioma) || 'es';
+  let texto;
+  let intent = 'adjunto';
+  if (clase === 'audio') {
+    intent = 'audio';
+    texto =
+      idioma === 'en'
+        ? "Thanks for your voice note 🙏 I can't listen to it here — could you please type it out for me? That way I get it down right."
+        : 'Gracias por su nota de voz 🙏 Por aquí no la puedo escuchar: ¿me lo escribe en un mensajito, por favor? Así lo anoto bien.';
+  } else if (clase === 'location') {
+    intent = 'ubicacion';
+    texto =
+      idioma === 'en'
+        ? 'Thanks for sharing your location! 📍 To write down the delivery correctly, could you please type the full job address (number, street and city)?'
+        : '¡Gracias por compartir su ubicación! 📍 Para anotar bien la entrega, ¿me escribe la dirección completa de la obra (número, calle y ciudad), por favor?';
+  } else {
+    texto =
+      idioma === 'en'
+        ? 'Thanks 🙏 Could you please type that in a text message for me? That way I get it down right in your order.'
+        : 'Gracias 🙏 ¿Me lo puede escribir en un mensaje de texto, por favor? Así lo anoto bien en su orden.';
+  }
+  if (flow) {
+    const paso = pasoActual(flow);
+    // Si el paso actual ya es la dirección, el texto de ubicación
+    // ya la está pidiendo: no se duplica la pregunta.
+    if (paso && !(clase === 'location' && paso === 'direccion')) {
+      texto += '\n' + preguntaPara(paso, flow.datos, idioma);
+    }
+  }
+  return { responder: true, texto, intent, topic: 'un mensaje sin texto' };
 }
 
 /**
@@ -1031,7 +1902,7 @@ function abreFlujo(intent, textoCliente) {
  * flujo no vence por tiempo (el estado persiste en la base).
  * Devuelve { responder, texto, intent, topic, motivo, confirmacionArmada? }.
  */
-function decidirRespuesta(conversacion, textoCliente) {
+function decidirRespuesta(conversacion, textoCliente, tipoMensaje = 'text') {
   if (conversacion.botPaused) {
     return { responder: false, motivo: 'bot pausado por especialista' };
   }
@@ -1052,32 +1923,88 @@ function decidirRespuesta(conversacion, textoCliente) {
     }
   }
 
+  // --- Mensajes que NO son texto (nota de voz, ubicación, foto…):
+  // jamás se guardan como dato; se pide el dato en texto.
+  const clase = claseNoTexto(textoCliente, tipoMensaje);
+  if (clase) {
+    return responderNoTexto(conversacion, clase);
+  }
+
   const intent = detectarIntent(textoCliente);
+  const idiomaMsg = detectarIdioma(textoCliente);
 
   // --- Flujo de cotización/pedido EN CURSO: tiene prioridad.
   // Las respuestas cortas se interpretan como el dato que se pidió;
   // jamás se cae al menú genérico a mitad del flujo.
   if (conversacion.flow && conversacion.flow.datos) {
-    if (intent.id === 'humano') {
+    const paso = pasoActual(conversacion.flow);
+    // El intent «humano» NO se evalúa en los pasos de nombre y
+    // compañía: lo que el cliente escriba ahí ES su nombre o su
+    // compañía (un cliente que se llama Jesús no está pidiendo
+    // hablar con Jesus).
+    if (intent.id === 'humano' && paso !== 'nombre' && paso !== 'compania') {
       // El cliente pidió una persona: se cierra el flujo y se le atiende.
+      const idiomaFlow = conversacion.flow.idioma || idiomaMsg;
       db.setConversationFlow(conversacion.id, null);
       conversacion.flow = null;
       return {
         responder: true,
-        texto: textoEfectivo('humano', conversacion.name),
+        texto: textoEfectivo('humano', conversacion.name, idiomaFlow),
         intent: 'humano',
         topic: 'hablar con un especialista',
+      };
+    }
+    // Cancelación a mitad del flujo: se cierra con despedida
+    // amable y la conversación queda terminada por el cliente.
+    if (esCancelacion(textoCliente)) {
+      const idiomaFlow = conversacion.flow.idioma || idiomaMsg;
+      db.setConversationFlow(conversacion.id, null);
+      conversacion.flow = null;
+      return {
+        responder: true,
+        texto: despedidaCancelacion(idiomaFlow),
+        intent: 'cancelacion',
+        topic: 'una cancelación del cliente',
+        flujoCancelado: true,
       };
     }
     return manejarFlujo(conversacion, textoCliente, false, intent.id);
   }
 
+  // --- Cancelación sin flujo: despedida amable, sin «no entendí».
+  if (intent.id !== 'humano' && esCancelacion(textoCliente)) {
+    return {
+      responder: true,
+      texto: despedidaCancelacion(idiomaMsg),
+      intent: 'cancelacion',
+      topic: 'una cancelación del cliente',
+      flujoCancelado: true,
+    };
+  }
+
+  // --- Cobertura por ciudad: «¿Llegan a Fort Worth?» confirma la
+  // ciudad y sigue con la primera pregunta del flujo.
+  const ciudad = intent.id !== 'humano' ? preguntaCoberturaCiudad(textoCliente) : null;
+  if (ciudad) {
+    conversacion.flow = flujoNuevo('cotizacion', textoCliente);
+    db.setConversationFlow(conversacion.id, conversacion.flow);
+    return {
+      responder: true,
+      texto:
+        lineaCiudad(ciudad, conversacion.flow.idioma) +
+        '\n' +
+        preguntaPara('yardas', conversacion.flow.datos, conversacion.flow.idioma),
+      intent: 'zona',
+      topic: 'la zona de entrega',
+    };
+  }
+
   // --- Apertura del flujo de cotización/pedido.
   if (intent.id !== 'humano' && abreFlujo(intent, textoCliente)) {
-    conversacion.flow = {
-      tipo: intent.id === 'pedido' ? 'pedido' : 'cotizacion',
-      datos: datosVacios(),
-    };
+    conversacion.flow = flujoNuevo(
+      intent.id === 'pedido' ? 'pedido' : 'cotizacion',
+      textoCliente
+    );
     return manejarFlujo(conversacion, textoCliente, true, intent.id);
   }
 
@@ -1086,7 +2013,7 @@ function decidirRespuesta(conversacion, textoCliente) {
   // pierda y la conversación siga como una cotización.
   const idiomaAireSuelto = intent.id !== 'humano' ? preguntaSobreAire(textoCliente) : null;
   if (idiomaAireSuelto) {
-    conversacion.flow = { tipo: 'cotizacion', datos: datosVacios() };
+    conversacion.flow = flujoNuevo('cotizacion', textoCliente);
     db.setConversationFlow(conversacion.id, conversacion.flow);
     return {
       responder: true,
@@ -1102,7 +2029,7 @@ function decidirRespuesta(conversacion, textoCliente) {
   }
 
   // --- Respuesta normal por intent (comportamiento de siempre).
-  const texto = textoEfectivo(intent.id, conversacion.name);
+  const texto = textoEfectivo(intent.id, conversacion.name, idiomaMsg);
   return { responder: true, texto, intent: intent.id, topic: intent.topic };
 }
 
@@ -1120,4 +2047,9 @@ module.exports = {
   esPreguntaPrecio,
   preguntaSobreAire,
   esSaludoPuro,
+  detectarIdioma,
+  esCancelacion,
+  detectarFAQ,
+  detectarCiudad,
+  esRespuestaVaga,
 };
