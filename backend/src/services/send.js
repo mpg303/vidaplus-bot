@@ -78,6 +78,56 @@ async function sendTemplate(to, templateName, language = 'es', components = []) 
   });
 }
 
+/**
+ * Sube un archivo a la biblioteca de medios de WhatsApp (Meta) y
+ * devuelve su media_id. El media_id sirve ~30 días; quien lo usa
+ * debe re-subir si el envío con un id viejo falla.
+ * POST https://graph.facebook.com/{version}/{phone_number_id}/media
+ */
+async function uploadMedia(buffer, filename, mimeType) {
+  if (!listoParaEnviar()) {
+    throw new Error(
+      'Faltan META_ACCESS_TOKEN o META_PHONE_NUMBER_ID en la configuración.'
+    );
+  }
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', mimeType);
+  form.append('file', new Blob([buffer], { type: mimeType }), filename);
+  const res = await fetch(
+    `https://graph.facebook.com/${cfg.graphVersion}/${cfg.metaPhoneNumberId}/media`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.metaAccessToken}` },
+      body: form, // sin Content-Type manual: fetch pone el boundary
+    }
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.id) {
+    const err = new Error(
+      data?.error?.message || `Meta respondió ${res.status} al subir el archivo`
+    );
+    err.meta = data;
+    err.httpStatus = res.status;
+    throw err;
+  }
+  return data.id;
+}
+
+/**
+ * Envía un DOCUMENTO ya subido (por su media_id) al cliente.
+ * Funciona dentro de la ventana de 24h, como los textos.
+ */
+async function sendDocument(to, mediaId, filename) {
+  return llamarApi({
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'document',
+    document: { id: mediaId, filename },
+  });
+}
+
 /** Marca un mensaje entrante como leído (doble check azul). */
 async function markAsRead(messageId) {
   if (!listoParaEnviar() || !messageId) return;
@@ -93,4 +143,4 @@ async function markAsRead(messageId) {
   }
 }
 
-module.exports = { sendText, sendTemplate, markAsRead, listoParaEnviar };
+module.exports = { sendText, sendTemplate, markAsRead, listoParaEnviar, uploadMedia, sendDocument };

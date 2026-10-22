@@ -18,6 +18,7 @@ const { cfg } = require('../config');
 const db = require('../db');
 const { sendText, markAsRead } = require('../services/send');
 const { decidirRespuesta } = require('../services/autoReply');
+const { enviarFormaTarjeta, mensajeInstruccionesForma } = require('../services/formaTarjeta');
 const followup = require('../services/followup');
 
 const router = express.Router();
@@ -206,6 +207,65 @@ async function procesarMensajeEntrante(msg, nombrePerfil) {
     });
     db.setNeedsHuman(conv.id, true);
     console.log(`[webhook] confirmación armada en panel (pendiente número de orden) — ${waId}`);
+  }
+
+  // 3c. TARJETA DE CRÉDITO (orden de Jesus, 2026-10-21): si el
+  //     cliente eligió pagar con tarjeta de crédito, se le envía
+  //     AUTOMÁTICAMENTE la forma de autorización como documento
+  //     de WhatsApp, seguida del mensaje con las instrucciones
+  //     (llenarla en digital, firmarla y devolverla + las 4 fotos:
+  //     tarjeta e ID por ambos lados). Se abre la espera de
+  //     documentos en la conversación (docsTarjeta 'pendiente'):
+  //     autoReply registra lo que vaya llegando y avisa lo que
+  //     falte; al completarse marca needsHuman con el estado
+  //     'completo' para que la vigilancia avise a Jesus.
+  if (decision.formaTarjeta) {
+    const idiomaForma = decision.idiomaForma || 'es';
+    db.setDocsTarjeta(conv.id, {
+      estado: 'pendiente',
+      forma: false,
+      fotos: 0,
+      idioma: idiomaForma,
+      enviadoAt: new Date().toISOString(),
+      completadoAt: null,
+    });
+    try {
+      const metaIdDoc = await enviarFormaTarjeta(waId);
+      db.addMessage({
+        conversationId: conv.id,
+        waId,
+        sender: 'BOT',
+        type: 'document',
+        text: '[forma de autorización de tarjeta de crédito enviada]',
+        metaId: metaIdDoc,
+        status: 'sent',
+        flags: { tipo: 'forma_tarjeta', auto: true },
+      });
+      const instrucciones = mensajeInstruccionesForma(idiomaForma);
+      const metaIdTxt = await sendText(waId, instrucciones);
+      db.addMessage({
+        conversationId: conv.id,
+        waId,
+        sender: 'BOT',
+        type: 'text',
+        text: instrucciones,
+        metaId: metaIdTxt,
+        status: 'sent',
+        flags: { intent: 'docs_tarjeta', auto: true },
+      });
+      console.log(`[webhook] forma de autorización de tarjeta enviada — ${waId}`);
+    } catch (e) {
+      console.error('[webhook] no se pudo enviar la forma de tarjeta:', e.message);
+      db.addMessage({
+        conversationId: conv.id,
+        waId,
+        sender: 'BOT',
+        type: 'document',
+        text: '[forma de autorización de tarjeta de crédito enviada]',
+        status: 'failed',
+        flags: { tipo: 'forma_tarjeta', auto: true, error: e.message },
+      });
+    }
   }
 
   // 4. Programar el seguimiento 24h (insistencia si no contestan).

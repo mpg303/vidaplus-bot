@@ -1803,6 +1803,12 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       intent: flow.tipo,
       topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
       confirmacionArmada,
+      // TARJETA DE CRÉDITO (orden de Jesus, 2026-10-21): el
+      // webhook envía AUTOMÁTICAMENTE la forma de autorización
+      // como documento de WhatsApp y abre la espera de documentos
+      // (conv.docsTarjeta). Débito, Zelle y efectivo: sin forma.
+      formaTarjeta: datos.pago === 'Tarjeta de crédito',
+      idiomaForma: idioma,
     };
   }
 
@@ -1998,6 +2004,95 @@ function responderNoTexto(conversacion, clase) {
   return { responder: true, texto, intent, topic: 'un mensaje sin texto' };
 }
 
+// ============================================================
+// DOCUMENTOS DE LA TARJETA DE CRÉDITO (orden de Jesus,
+// 2026-10-21): tras enviarle la forma de autorización, el bot
+// espera en esa conversación (conv.docsTarjeta, estado
+// 'pendiente'): el DOCUMENTO que mande el cliente es la forma
+// llenada, y cada IMAGEN cuenta como una de las 4 fotos (tarjeta
+// frente y reverso + ID frente y reverso). Si falta algo, el bot
+// le dice con amabilidad qué falta exactamente; cuando está
+// TODO, confirma con el texto fijo y marca la conversación para
+// el especialista (needsHuman + docsTarjeta.estado 'completo'),
+// que es lo que la vigilancia lee para avisar a Jesus
+// «documentos completos».
+// ============================================================
+const MENSAJE_DOCS_COMPLETO_ES =
+  'Ya recibí tu forma y tus fotos, está todo completo. Gracias.';
+const MENSAJE_DOCS_COMPLETO_EN =
+  "I received your form and your photos, everything is complete. Thank you.";
+
+/** Texto amable que dice exactamente qué documento falta. */
+function textoDocsFaltantes(docs, idioma) {
+  const fotos = docs.fotos || 0;
+  if (idioma === 'en') {
+    const have = [];
+    if (docs.forma) have.push('I have your form ✅');
+    if (fotos > 0) have.push(`I have ${fotos} of the 4 photos`);
+    const need = [];
+    if (!docs.forma) need.push('your filled-out, signed authorization form');
+    if (fotos < 4) {
+      need.push(
+        `${4 - fotos} more photo(s): your card front and back, and your ID front and back (${fotos} of 4 so far)`
+      );
+    }
+    return (
+      `Thank you! 🙏${have.length ? ` ${have.join('; ')}.` : ''} ` +
+      `I still need: ${need.join(' and ')}. Could you please send it here?`
+    );
+  }
+  const have = [];
+  if (docs.forma) have.push('ya recibí su forma ✅');
+  if (fotos > 0) have.push(`ya tengo ${fotos} de las 4 fotos`);
+  const need = [];
+  if (!docs.forma) need.push('su forma de autorización llenada y firmada');
+  if (fotos < 4) {
+    need.push(
+      `${4 - fotos} foto(s) más: su tarjeta por el frente y el reverso, y su identificación por ambos lados (van ${fotos} de 4)`
+    );
+  }
+  return (
+    `¡Gracias! 🙏${have.length ? ` ${have.join('; ')}.` : ''} ` +
+    `Todavía me falta: ${need.join(' y ')}. ¿Me lo manda por aquí, por favor?`
+  );
+}
+
+/**
+ * Registra un documento o imagen entrante contra la espera de
+ * documentos de tarjeta (docsTarjeta 'pendiente') y decide la
+ * respuesta: qué falta, o la confirmación de completo.
+ */
+function manejarDocsTarjeta(conversacion, clase) {
+  const docs = { ...(conversacion.docsTarjeta || {}) };
+  const idioma = docs.idioma || 'es';
+  if (clase === 'documento') docs.forma = true;
+  if (clase === 'imagen') docs.fotos = Math.min(4, (docs.fotos || 0) + 1);
+  if (docs.forma && (docs.fotos || 0) >= 4) {
+    docs.estado = 'completo';
+    docs.completadoAt = new Date().toISOString();
+    db.setDocsTarjeta(conversacion.id, docs);
+    conversacion.docsTarjeta = docs;
+    // Listo para el especialista: la vigilancia avisa a Jesus
+    // «documentos completos» al ver needsHuman + estado completo.
+    db.setNeedsHuman(conversacion.id, true);
+    return {
+      responder: true,
+      texto: idioma === 'en' ? MENSAJE_DOCS_COMPLETO_EN : MENSAJE_DOCS_COMPLETO_ES,
+      intent: 'docs_tarjeta',
+      topic: 'sus documentos de tarjeta',
+      docsCompletos: true,
+    };
+  }
+  db.setDocsTarjeta(conversacion.id, docs);
+  conversacion.docsTarjeta = docs;
+  return {
+    responder: true,
+    texto: textoDocsFaltantes(docs, idioma),
+    intent: 'docs_tarjeta',
+    topic: 'sus documentos de tarjeta',
+  };
+}
+
 /**
  * Saludo breve de CONTINUACIÓN cuando el bot despierta de
  * needsHuman y el cliente solo saludó: nada de bienvenida
@@ -2094,6 +2189,18 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
   // jamás se guardan como dato; se pide el dato en texto.
   const clase = claseNoTexto(textoCliente, tipoMensaje);
   if (clase) {
+    // DOCUMENTOS DE TARJETA EN ESPERA: si esta conversación está
+    // esperando la forma y las fotos (el cliente pagó con tarjeta
+    // de crédito y ya se le envió la forma), un documento es la
+    // forma llenada y una imagen es una de las 4 fotos — se
+    // registra contra la espera en vez de pedirlo en texto.
+    if (
+      (clase === 'documento' || clase === 'imagen') &&
+      conversacion.docsTarjeta &&
+      conversacion.docsTarjeta.estado === 'pendiente'
+    ) {
+      return manejarDocsTarjeta(conversacion, clase);
+    }
     return responderNoTexto(conversacion, clase);
   }
 

@@ -29,7 +29,9 @@ const DB_FILE = path.join(cfg.dataDir, 'db.json');
 
 function vacia() {
   return {
-    conversations: [], // { id, waId, name, lastMessageAt, lastPreview, unread, botPaused, needsHuman, needsHumanAt, surveySentAt, flow }
+    conversations: [], // { id, waId, name, lastMessageAt, lastPreview, unread, botPaused, needsHuman, needsHumanAt, surveySentAt, flow, docsTarjeta }
+    // docsTarjeta: documentos de la forma de autorización de tarjeta, o null:
+    // { estado: 'pendiente'|'completo', forma: bool, fotos: 0..4, idioma, enviadoAt, completadoAt }
     // flow: estado del flujo de cotización/pedido en curso, o null:
     // { tipo: 'cotizacion'|'pedido', idioma: 'es'|'en', intentos, intentosPaso, turnos, pagoAclaracionPedida,
     //   datos: { yardas:{cantidad,plus}|null, mix, aire, direccion, fecha, hora, slump, inspeccion, nombre, compania, pago } }
@@ -216,6 +218,7 @@ function upsertConversation(waId, name) {
       needsHumanAt: null,
       surveySentAt: null,
       flow: null,
+      docsTarjeta: null,
     };
     db.conversations.push(c);
   } else if (name && name !== waId && c.name === c.waId) {
@@ -331,6 +334,23 @@ function setConversationFlow(id, flow) {
   const c = getConversation(id);
   if (c) {
     c.flow = flow || null;
+    save();
+  }
+  return c;
+}
+
+/**
+ * Guarda el estado de los documentos de tarjeta de la conversación:
+ * la forma de autorización y las 4 fotos (tarjeta frente/reverso e
+ * ID frente/reverso) que el bot espera tras enviar la forma. La
+ * vigilancia de Jesus lee este estado del jmp_state: cuando queda
+ * { estado: 'completo' } junto con needsHuman, avisa «documentos
+ * completos».
+ */
+function setDocsTarjeta(id, docs) {
+  const c = getConversation(id);
+  if (c) {
+    c.docsTarjeta = docs || null;
     save();
   }
   return c;
@@ -531,6 +551,7 @@ module.exports = {
   setBotPaused,
   setNeedsHuman,
   setConversationFlow,
+  setDocsTarjeta,
   updateMessageStatus,
   scheduleFollowup,
   cancelFollowups,
