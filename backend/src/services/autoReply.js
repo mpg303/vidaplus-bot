@@ -15,7 +15,7 @@
 // con la orden completa y ANTES del cierre, el bot pide UNO POR
 // VEZ: 5) el nombre de la persona, 6) el nombre de su compañía
 // (si no tiene compañía, queda «Particular») y 7) la forma de pago
-// (Zelle, tarjeta de débito o tarjeta de crédito). Los datos que
+// (Zelle, tarjeta de débito, tarjeta de crédito o efectivo). Los datos que
 // el cliente ya dio no se vuelven a pedir, y las respuestas cortas
 // a mitad del flujo se interpretan como el dato que se está
 // pidiendo (jamás se responde el menú genérico a mitad del flujo).
@@ -412,12 +412,13 @@ function construirRespuesta(intentId, nombre, idioma = 'es') {
         `Gracias por su paciencia.`
       );
     case 'faq_pagos':
-      // Formas de pago reales del negocio (sin pedir datos de cobro).
-      // El efectivo NO se ofrece como opción regular: si preguntan
-      // por él, aplica la regla del dueño (por adelantado, con un
-      // encargado; nunca en el lugar del trabajo).
+      // Formas de pago reales del negocio (sin pedir datos de cobro):
+      // las CUATRO opciones del dueño (2026-10-21) — Zelle, tarjeta
+      // de débito, tarjeta de crédito y efectivo. El efectivo va
+      // siempre con su regla: por adelantado, encontrándose con un
+      // encargado; nunca en el lugar del trabajo.
       return (
-        `¡Claro! 🙏 Aceptamos *Zelle*, *tarjeta de débito* y *tarjeta de crédito*.\n` +
+        `¡Claro! 🙏 Aceptamos *Zelle*, *tarjeta de débito*, *tarjeta de crédito* y *efectivo*.\n` +
         `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden.\n` +
         `${REGLA_EFECTIVO_ES}`
       );
@@ -514,7 +515,7 @@ function construirRespuestaEN(intentId, nombre) {
       );
     case 'faq_pagos':
       return (
-        `Yes 🙏 We accept *Zelle*, *debit card* and *credit card*.\n` +
+        `Yes 🙏 We accept *Zelle*, *debit card*, *credit card* and *cash*.\n` +
         `Payment is in advance: as soon as your payment is confirmed, ` +
         `we load your order.\n` +
         `${REGLA_EFECTIVO_EN}`
@@ -721,8 +722,9 @@ function esPagoEfectivo(raw) {
 
 /**
  * Interpreta la respuesta al paso de la FORMA DE PAGO (el último
- * del flujo): «¿Cómo va a pagar: Zelle, tarjeta de débito o tarjeta
- * de crédito?». Devuelve el valor normalizado — «Zelle», «Tarjeta
+ * del flujo): «¿Cómo va a pagar: Zelle, tarjeta de débito, tarjeta
+ * de crédito o efectivo?» (las cuatro opciones del dueño,
+ * 2026-10-21). Devuelve el valor normalizado — «Zelle», «Tarjeta
  * de débito» o «Tarjeta de crédito» —, o «Tarjeta» a secas si el
  * cliente dijo solo «tarjeta»/«card» sin aclarar (el flujo le
  * pregunta «¿Débito o crédito?» una sola vez), o «Efectivo (por
@@ -771,6 +773,25 @@ function pareceMix(texto) {
   return /\b(mix|mezcla|psi|libras|resistencia|high early|reforzado|fibra|fiber)\b/i.test(
     normalizar(texto)
   );
+}
+
+/**
+ * PRODUCTOS que el cliente puede pedir EN VEZ de un mix con PSI
+ * (vocabulario del dueño, 2026-10-21): pea gravel, flowable fill
+ * y grout también son «ingredientes»/productos del concreto. Si
+ * el cliente nombra uno, ESE producto es la mezcla elegida: se
+ * guarda con su nombre canónico y el flujo sigue igual (el
+ * producto ocupa el lugar del mix, también en la confirmación).
+ * Devuelve 'Pea gravel' | 'Flowable fill' | 'Grout' | null.
+ */
+function detectarProducto(texto) {
+  const t = normalizar(texto);
+  if (/\bpea\s?gravel\b/.test(t) || /\bgrava\b/.test(t)) return 'Pea gravel';
+  if (/\bflowable(\s+fill)?\b/.test(t) || /\bclsm\b/.test(t) || /\brelleno fluido\b/.test(t)) {
+    return 'Flowable fill';
+  }
+  if (/\bgrout\b/.test(t) || /\blechada\b/.test(t)) return 'Grout';
+  return null;
 }
 
 /** ¿El mensaje es una CORRECCIÓN de un dato ya dado? («mejor 15 yardas», «eran 12»…). */
@@ -1036,6 +1057,10 @@ function extraerDatos(texto, paso) {
   if (aire) d.aire = aire;
 
   // --- Mix ---
+  // Primero los PRODUCTOS sin PSI (pea gravel, flowable fill,
+  // grout): si el cliente nombra uno, ese producto ES la mezcla
+  // — en el paso del mix y también en un mensaje «todo en uno»
+  // («necesito 10 yardas de flowable fill para mañana»).
   // La resistencia se pide como «4000 psi», «3000 libras», «de
   // 3000» o el número solo («cemento 4000»): todas se entienden
   // como el mix. El número solo NO se captura si el mensaje parece
@@ -1043,13 +1068,16 @@ function extraerDatos(texto, paso) {
   // 3000» o «3000 con aire» SÍ se capturan aunque venga la
   // dirección en el mismo mensaje (antes ese mix se perdía).
   const NUMS_MIX = '2500|3000|3500|4000|4500|5000|5500|6000';
+  const producto = detectarProducto(raw);
   const mPsi =
     raw.match(/(\d{3,5})\s*(?:psi|libras)\b/i) ||
     raw.match(new RegExp(`\\bde\\s+(${NUMS_MIX})\\b`, 'i')) ||
     raw.match(new RegExp(`\\b(${NUMS_MIX})\\s+(?:con|sin)\\s+aire\\b`, 'i')) ||
     raw.match(new RegExp(`\\b(?:mix|mezcla)\\s*(?:de\\s*)?(${NUMS_MIX})\\b`, 'i')) ||
     (!esDireccion ? raw.match(new RegExp(`\\b(${NUMS_MIX})\\b`)) : null);
-  if (mPsi) {
+  if (producto) {
+    d.mix = producto;
+  } else if (mPsi) {
     d.mix = `${mPsi[1]} psi`;
   } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora && !correccion && !vaga) {
     // En el paso del mix, el mensaje puede ser la descripción del
@@ -1433,7 +1461,7 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
       case 'compania':
         return "And what's the name of your company? If you don't have one and it's personal, just let me know and we'll leave it that way.";
       case 'pago':
-        return 'How will you pay: Zelle, debit card or credit card?';
+        return 'How will you pay: Zelle, debit card, credit card or cash?';
       default:
         return '';
     }
@@ -1488,7 +1516,11 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
       return '¿Y cuál es el nombre de su compañía? Si no tiene compañía y es particular, dígamelo y así lo dejamos.';
     case 'pago':
       // Último dato: la forma de pago (sin pedir datos de cobro).
-      return '¿Cómo va a pagar: Zelle, tarjeta de débito o tarjeta de crédito?';
+      // Cuatro opciones (orden del dueño, 2026-10-21): Zelle,
+      // tarjeta de débito, tarjeta de crédito y efectivo — el
+      // efectivo con su regla de pago por adelantado con un
+      // encargado (nunca en el lugar del trabajo).
+      return '¿Cómo va a pagar: Zelle, tarjeta de débito, tarjeta de crédito o efectivo?';
     default:
       return '';
   }
