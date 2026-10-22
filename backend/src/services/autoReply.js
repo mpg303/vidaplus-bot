@@ -1967,39 +1967,95 @@ function responderNoTexto(conversacion, clase) {
 }
 
 /**
+ * Saludo breve de CONTINUACIÓN cuando el bot despierta de
+ * needsHuman y el cliente solo saludó: nada de bienvenida
+ * completa ni de repetir el resumen de la orden anterior; se le
+ * saluda de nuevo y se le ofrece seguir con lo que necesite.
+ */
+function saludoContinuacion(nombre, idioma = 'es') {
+  const n =
+    nombre && nombre !== '' && !/^\d+$/.test(String(nombre)) ? `, ${nombre}` : '';
+  if (idioma === 'en') {
+    return (
+      `Hello again${n}! 👋 How else can we help you?\n` +
+      'You can ask for another *quote*, place another *order*, or ask us anything you need.'
+    );
+  }
+  return (
+    `¡Hola de nuevo${n}! 👋 ¿En qué más le ayudamos?\n` +
+    'Puede pedir otra *cotización*, hacer otro *pedido* o preguntarnos lo que necesite.'
+  );
+}
+
+/**
  * Decide si el bot debe responder a un mensaje entrante del cliente.
  * NO responde si:
- *  - el bot está pausado para esa conversación (lo atiende un humano),
- *  - la conversación está marcada needsHuman (flujo completado o el
- *    cliente pidió una persona: queda para el especialista, sin
- *    reabrir la bienvenida ni reiniciar el flujo), o
+ *  - el bot está pausado para esa conversación (lo atiende un humano), o
  *  - un ESPECIALISTA respondió hace menos de AUTOREPLY_HUMAN_PAUSE_MIN minutos
  *    (para no interrumpir la conversación humana).
+ * DESPERTAR (orden de Jesus, 2026-10-21): la marca needsHuman ya NO
+ * duerme al bot para siempre. Si la conversación está marcada
+ * (flujo completado o el cliente pidió una persona) y el cliente
+ * vuelve a escribir, el bot DESPIERTA: limpia la marca y sigue la
+ * conversación con normalidad. Única excepción: si un ESPECIALISTA
+ * escribió desde el panel DESPUÉS de la marca y sigue dentro de la
+ * ventana de pausa, el bot se queda en silencio para no interrumpir
+ * a un humano que está atendiendo en vivo (y la marca se mantiene).
+ * Al despertar, la respuesta se abre con la frase de retomada del
+ * dueño (ver decidirRespuesta) y, si el cliente solo saludó, el
+ * saludo es breve de continuación, sin repetir la orden anterior.
  * RETOMA: con un flujo ACTIVO, un mensaje nuevo del cliente (saludo,
  * mensaje corto o el dato siguiente) continúa el flujo donde iba:
  * jamás se manda la bienvenida ni el menú a mitad del flujo, y el
  * flujo no vence por tiempo (el estado persiste en la base).
  * Devuelve { responder, texto, intent, topic, motivo, confirmacionArmada? }.
+ * `ctx` es un objeto interno del envoltorio decidirRespuesta: aquí
+ * se anota si la conversación despertó (ctx.desperto) y el idioma
+ * de la respuesta cuando ya se conoce (ctx.idioma).
  */
-function decidirRespuesta(conversacion, textoCliente, tipoMensaje = 'text') {
+function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text', ctx = {}) {
   if (conversacion.botPaused) {
     return { responder: false, motivo: 'bot pausado por especialista' };
   }
-  // Conversación esperando a un ESPECIALISTA (flujo ya completado
-  // con la confirmación armada, o el cliente pidió una persona):
-  // un mensaje nuevo del cliente NO reabre la bienvenida ni
-  // reinicia el flujo; la conversación queda para el especialista.
-  // (Cuando el especialista responde desde el panel, addMessage
-  // limpia needsHuman y el bot vuelve a atender con normalidad.)
-  if (conversacion.needsHuman) {
-    return { responder: false, motivo: 'esperando atención de un especialista' };
-  }
   const ultimoHumano = db.lastMessageFrom(conversacion.id, 'ESPECIALISTA');
-  if (ultimoHumano) {
-    const minutos = (Date.now() - new Date(ultimoHumano.timestamp).getTime()) / 60000;
-    if (minutos < cfg.autoreplyHumanPauseMin) {
+  const minutosHumano = ultimoHumano
+    ? (Date.now() - new Date(ultimoHumano.timestamp).getTime()) / 60000
+    : null;
+
+  if (conversacion.needsHuman) {
+    // ¿Un especialista tomó la conversación DESPUÉS de la marca y
+    // sigue dentro de la ventana de pausa? Entonces no se
+    // interrumpe: silencio y la marca queda como está. (Las
+    // conversaciones marcadas antes de existir needsHumanAt no
+    // traen la hora de la marca: vale cualquier mensaje de
+    // especialista dentro de la ventana.)
+    const marcaMs = conversacion.needsHumanAt
+      ? new Date(conversacion.needsHumanAt).getTime()
+      : null;
+    const humanoTrasMarca =
+      !!ultimoHumano &&
+      (marcaMs === null ||
+        new Date(ultimoHumano.timestamp).getTime() >= marcaMs);
+    if (
+      humanoTrasMarca &&
+      minutosHumano !== null &&
+      minutosHumano < cfg.autoreplyHumanPauseMin
+    ) {
       return { responder: false, motivo: 'especialista activo recientemente' };
     }
+    // DESPERTAR: ningún especialista tomó la conversación (o ya
+    // pasó la ventana de pausa) y el cliente volvió a escribir:
+    // se limpia la marca y el mensaje se procesa con normalidad.
+    db.setNeedsHuman(conversacion.id, false);
+    conversacion.needsHuman = false;
+    conversacion.needsHumanAt = null;
+    ctx.desperto = true;
+    ctx.idioma =
+      conversacion.flow && conversacion.flow.idioma
+        ? conversacion.flow.idioma
+        : null;
+  } else if (minutosHumano !== null && minutosHumano < cfg.autoreplyHumanPauseMin) {
+    return { responder: false, motivo: 'especialista activo recientemente' };
   }
 
   // --- Mensajes que NO son texto (nota de voz, ubicación, foto…):
@@ -2107,9 +2163,48 @@ function decidirRespuesta(conversacion, textoCliente, tipoMensaje = 'text') {
     };
   }
 
+  // --- Retoma tras despertar de needsHuman con un saludo puro y
+  // sin flujo en curso: saludo breve de continuación, sin la
+  // bienvenida completa y sin repetir la orden anterior.
+  if (ctx.desperto && esSaludoPuro(textoCliente)) {
+    return {
+      responder: true,
+      texto: saludoContinuacion(conversacion.name, idiomaMsg),
+      intent: 'saludo',
+      topic: 'su saludo',
+    };
+  }
+
   // --- Respuesta normal por intent (comportamiento de siempre).
   const texto = textoEfectivo(intent.id, conversacion.name, idiomaMsg);
   return { responder: true, texto, intent: intent.id, topic: intent.topic };
+}
+
+// ============================================================
+// FRASE DE RETOMADA AL DESPERTAR (palabras exactas del dueño,
+// 2026-10-21): cuando el bot retoma una conversación porque el
+// especialista NO contestó, su primer mensaje al cliente abre
+// con esta frase y de ahí sigue ayudándole con lo que pida.
+// ============================================================
+const LINEA_DESPERTAR_ES =
+  'El especialista no te contestó, no te preocupes, yo estoy aquí para ayudarte.';
+const LINEA_DESPERTAR_EN =
+  "The specialist didn't get back to you, don't worry, I'm here to help you.";
+
+/**
+ * Punto de entrada público: corre la decisión normal y, si la
+ * conversación despertó de needsHuman en este turno, antepone la
+ * frase de retomada del dueño a la respuesta (en el idioma de la
+ * respuesta: el del flujo si hay uno, si no el del mensaje).
+ */
+function decidirRespuesta(conversacion, textoCliente, tipoMensaje = 'text') {
+  const ctx = { desperto: false, idioma: null };
+  const d = decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje, ctx);
+  if (d.responder && ctx.desperto) {
+    const idioma = ctx.idioma || detectarIdioma(textoCliente);
+    d.texto = `${idioma === 'en' ? LINEA_DESPERTAR_EN : LINEA_DESPERTAR_ES}\n${d.texto}`;
+  }
+  return d;
 }
 
 module.exports = {

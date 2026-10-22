@@ -29,7 +29,7 @@ const DB_FILE = path.join(cfg.dataDir, 'db.json');
 
 function vacia() {
   return {
-    conversations: [], // { id, waId, name, lastMessageAt, lastPreview, unread, botPaused, needsHuman, surveySentAt, flow }
+    conversations: [], // { id, waId, name, lastMessageAt, lastPreview, unread, botPaused, needsHuman, needsHumanAt, surveySentAt, flow }
     // flow: estado del flujo de cotización/pedido en curso, o null:
     // { tipo: 'cotizacion'|'pedido', idioma: 'es'|'en', intentos, intentosPaso, turnos, pagoAclaracionPedida,
     //   datos: { yardas:{cantidad,plus}|null, mix, aire, direccion, fecha, hora, slump, inspeccion, nombre, compania, pago } }
@@ -213,6 +213,7 @@ function upsertConversation(waId, name) {
       unread: 0,
       botPaused: false,
       needsHuman: false,
+      needsHumanAt: null,
       surveySentAt: null,
       flow: null,
     };
@@ -272,6 +273,7 @@ function addMessage({ conversationId, waId, sender, type = 'text', text = '', me
     if (sender === 'ESPECIALISTA') {
       c.unread = 0;
       c.needsHuman = false;
+      c.needsHumanAt = null;
     }
   }
   save();
@@ -314,6 +316,12 @@ function setNeedsHuman(id, value) {
   const c = getConversation(id);
   if (c) {
     c.needsHuman = !!value;
+    // Momento en que se puso la marca: decidirRespuesta lo usa para
+    // saber si un mensaje de ESPECIALISTA llegó DESPUÉS de la marca
+    // (regla de despertar del 2026-10-21: si el cliente vuelve a
+    // escribir y ningún especialista tomó la conversación tras la
+    // marca, el bot despierta y sigue la conversación).
+    c.needsHumanAt = value ? ahoraIso() : null;
     save();
   }
 }
