@@ -892,7 +892,14 @@ function preguntaCoberturaCiudad(texto) {
   const ciudad = detectarCiudad(texto);
   if (!ciudad) return null;
   const t = normalizar(texto);
-  if (/\b(llegan|entregan|cubren|van a|deliver|cover|go to|reach)\b/.test(t)) return ciudad;
+  // «Vienen», «viene» y «atienden» también son pregunta de
+  // cobertura (falla real 2026-10-22: «¿Vienen hasta Denton?»
+  // no se detectaba y la pregunta se guardó como la dirección).
+  if (
+    /\b(llegan|llega|entregan|entrega|cubren|cubre|vienen|viene|van a|atienden|atiende|deliver|delivers|cover|covers|go to|come to|reach|serve)\b/.test(t)
+  ) {
+    return ciudad;
+  }
   return null;
 }
 function lineaCiudad(ciudad, idioma) {
@@ -988,7 +995,17 @@ function extraerDatos(texto, paso) {
   } else if (paso === 'yardas') {
     const mNum = raw.match(/^[^0-9]*(\d+(?:[.,]\d+)?)[^0-9]*$/);
     if (mNum) {
-      d.yardas = { cantidad: mNum[1].replace(',', '.'), plus: /\bplus\b/i.test(raw) };
+      // OJO (falla real 2026-10-22): un número PEGADO a «psi» o
+      // «libras» es el MIX, nunca la cantidad — «¿en cuánto tiene
+      // la yarda del 3000psi?» dejó anotadas «3000 yds» porque el
+      // único número del mensaje era el del mix. Si el número va
+      // con psi/libras, las yardas NO se capturan: el flujo las
+      // pregunta como debe ser.
+      const idxNum = raw.indexOf(mNum[1]);
+      const despuesNum = raw.slice(idxNum + mNum[1].length);
+      if (!/^\s*(psi|libras)\b/i.test(despuesNum)) {
+        d.yardas = { cantidad: mNum[1].replace(',', '.'), plus: /\bplus\b/i.test(raw) };
+      }
     }
   }
 
@@ -1039,11 +1056,17 @@ function extraerDatos(texto, paso) {
     d.fecha = mFecha[0].trim();
   } else if (
     paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw) &&
-    !esPreguntaPrecio(raw) && !preguntaSobreAire(raw) && !correccion && !vaga
+    !esPreguntaPrecio(raw) && !preguntaSobreAire(raw) &&
+    !preguntaCuandoPedir(raw) && !preguntaPagoAdelantado(raw) &&
+    !correccion && !vaga
   ) {
     // Respuesta corta al «¿para qué día?»: se toma tal cual
     // (una pregunta de precio jamás se toma como fecha, y un
-    // «ok» tampoco es una fecha).
+    // «ok» tampoco es una fecha). REGLA GENERAL (2026-10-22):
+    // un campo solo se llena con una RESPUESTA del cliente,
+    // nunca con una PREGUNTA suya — «quiero hacerlo la semana
+    // que viene, ¿cuándo debo pedirlo?» no es una fecha, y
+    // «¿cuándo se paga?» tampoco.
     d.fecha = raw.replace(/[. ]+$/, '');
   }
 
@@ -1105,12 +1128,18 @@ function extraerDatos(texto, paso) {
     !d.hora &&
     !esPreguntaPrecio(raw) &&
     !preguntaSobreAire(raw) &&
+    !preguntaCoberturaCiudad(raw) &&
+    !preguntaCuandoPedir(raw) &&
+    !preguntaPagoAdelantado(raw) &&
     !correccion &&
     !vaga
   ) {
     // Respuesta corta al «¿cuál es la dirección?»: se toma tal cual
     // (conserva saltos de línea, ej. la línea «Estados Unidos»).
-    // Una pregunta de precio jamás se toma como dirección.
+    // Una pregunta de precio jamás se toma como dirección — y
+    // una pregunta de COBERTURA («¿vienen hasta Denton?»),
+    // tampoco: es una pregunta, no la dirección (falla real
+    // 2026-10-22).
     d.direccion = raw.replace(/[. ]+$/, '');
   }
 
@@ -1395,6 +1424,31 @@ function preguntaSobreAire(texto) {
   ) {
     return 'es';
   }
+  // CONSEJO sobre el aire (falla real 2026-10-22): «¿mi garaje
+  // necesitará aire? Es cerrado bajo techo» — el cliente está
+  // PREGUNTANDO si su trabajo necesita aire, no respondiendo
+  // «con aire»; antes la palabra «aire» se capturaba como el
+  // dato y la pregunta quedaba sin responder. Solo cuenta en
+  // forma de pregunta (con «?» o abriendo con el verbo), para
+  // no robar respuestas-orden como «necesito el concreto con
+  // aire».
+  const esPregunta =
+    /\?/.test(texto) ||
+    /^(necesita|necesito|necesitara|necesitaria|requiere|does|do|should|will)\b/.test(t);
+  if (
+    esPregunta &&
+    (/\b(necesita|necesito|necesitara|necesitaria|necesitan|requiere|requiero|lleva|debe|debo|conviene|hace falta|es necesario|es necesaria)\b[^.?!]*\baire\b/.test(t) ||
+      /\b(mejor|recomendado|recomienda|recomiendas)\b[^.?!]*\baire\b/.test(t))
+  ) {
+    return 'es';
+  }
+  if (
+    esPregunta &&
+    (/\b(need|needs|needed|require|requires|should)\b[^.?!]*\bair\b/.test(t) ||
+      /\bdoes\b[^.?!]*\b(need|require)\b[^.?!]*\bair\b/.test(t))
+  ) {
+    return 'en';
+  }
   return null;
 }
 
@@ -1410,6 +1464,89 @@ const EXPLICACION_AIRE_EN =
   'They help the concrete hold up better against cold and temperature changes without cracking; ' +
   "it's used mostly for outdoor work like driveways, patios and sidewalks. " +
   "For indoor floors or very smooth finishes, it's normally ordered without air, because it comes out stronger and smoother.";
+
+/**
+ * Recomendación breve del aire según el trabajo que el cliente
+ * describe al preguntar (misma guía simple de la explicación):
+ * interior bajo techo → normalmente SIN aire; exterior → CON
+ * aire. Devuelve null si el mensaje no deja claro el tipo de
+ * trabajo (entonces solo va la explicación y la pregunta).
+ */
+function recomendacionAire(texto, idioma = 'es') {
+  const t = normalizar(texto);
+  const interior =
+    /\b(bajo techo|interior|interiores|adentro|dentro|cerrado|cerrada|garaje|garage|cochera|indoor|inside|enclosed|under (a )?roof)\b/.test(t);
+  const exterior =
+    /\b(exterior|exteriores|afuera|fuera|patio|entrada|driveway|banqueta|banquetas|sidewalk|sidewalks|acera|outdoor|outside)\b/.test(t);
+  if (interior && !exterior) {
+    return idioma === 'en'
+      ? "For indoor work under a roof like yours, it's normally ordered *without air*."
+      : 'Para un trabajo de interior bajo techo como el suyo, lo normal es pedirlo *sin aire*.';
+  }
+  if (exterior && !interior) {
+    return idioma === 'en'
+      ? "For outdoor work like yours, it's normally ordered *with air*."
+      : 'Para un trabajo de exterior como el suyo, lo normal es pedirlo *con aire*.';
+  }
+  return null;
+}
+
+/**
+ * ¿El cliente pregunta CUÁNDO debe pedir el concreto? («quiero
+ * hacerlo la semana que viene, ¿cuándo debo pedirlo?») — es una
+ * PREGUNTA sobre el proceso, no la fecha de la orden: jamás se
+ * guarda como el dato del día (falla real 2026-10-22, donde la
+ * frase completa quedó anotada como la fecha).
+ */
+function preguntaCuandoPedir(texto) {
+  const t = normalizar(texto);
+  return (
+    /\bcuando\b[^.?!]*\b(pedir|pido|pedirlo|pedirla|ordeno|ordenar|encargo|encargar|hacer el pedido|order)\b/.test(t) ||
+    /\b(debo|tengo que|hay que|se debe)\b[^.?!]*\bpedir(lo|la)?\b/.test(t) ||
+    /\bcon cuanto tiempo\b[^.?!]*\b(pedir|anticipacion|antes|anticipado)\b/.test(t) ||
+    /\bcuanto tiempo antes\b/.test(t) ||
+    /\bwhen\b[^.?!]*\b(should|do|can|must)\b[^.?!]*\border\b/.test(t) ||
+    /\bhow (far )?in advance\b[^.?!]*\border\b/.test(t) ||
+    /\bhow soon\b[^.?!]*\border\b/.test(t)
+  );
+}
+
+/** Respuesta a «¿cuándo debo pedirlo?» (sin precios, regla del dueño). */
+const LINEA_CUANDO_PEDIR_ES =
+  'Puede pedirlo desde hoy mismo: en cuanto se confirma su pago por adelantado, su orden queda agendada para el día que usted elija.';
+const LINEA_CUANDO_PEDIR_EN =
+  'You can order starting today: as soon as your advance payment is confirmed, your order is scheduled for the day you choose.';
+
+/**
+ * ¿El cliente pregunta por el MOMENTO del pago? («¿pago el día
+ * del trabajo o debo pagar antes?») — pregunta directa sobre la
+ * regla del dueño (el pago es POR ADELANTADO): se responde
+ * directo y el flujo retoma el paso en que iba; antes la
+ * pregunta se ignoraba y el bot seguía con otra cosa (falla
+ * real 2026-10-22).
+ */
+function preguntaPagoAdelantado(texto) {
+  const t = normalizar(texto);
+  return (
+    /\bdebo pagar\b/.test(t) ||
+    /\b(pago|pagar|pagaria|se paga|hay que pagar|tengo que pagar)\b[^.?!]*\b(por adelantado|adelantado|anticipado|antes|el dia|ese dia|el mismo dia|al entregar|a la entrega|cuando lleguen|cuando entreguen|despues|al final)\b/.test(t) ||
+    /\bcuando\b[^.?!]*\b(se paga|hay que pagar|pago)\b/.test(t) ||
+    /\bdo i pay\b/.test(t) ||
+    /\bwhen do i pay\b/.test(t) ||
+    /\b(pay|payment)\b[^.?!]*\b(in advance|upfront)\b/.test(t) ||
+    /\bin advance\b[^.?!]*\b(pay|payment)\b/.test(t)
+  );
+}
+
+/**
+ * Respuesta a la pregunta del momento del pago: es el mismo
+ * texto del cierre aprobado por el dueño (ver resumenCliente y
+ * la FAQ de pagos).
+ */
+const LINEA_PAGO_ADELANTADO_ES =
+  'El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden.';
+const LINEA_PAGO_ADELANTADO_EN =
+  'Payment is in advance: as soon as your payment is confirmed, we load your order.';
 
 /**
  * La pregunta por el dato que falta, en el orden del dueño.
@@ -1713,6 +1850,14 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const faq = saludoPuro ? null : detectarFAQ(textoCliente);
   const ciudad = !saludoPuro && !faq ? preguntaCoberturaCiudad(textoCliente) : null;
   const noSabe = pasoPedido === 'yardas' && !saludoPuro && esNoSabeYardas(textoCliente);
+  // REGLA GENERAL (2026-10-22): si el mensaje del cliente en un
+  // paso es una PREGUNTA (cobertura, cuándo pedir, momento del
+  // pago, consejo del aire), el bot la RESPONDE breve y simple y
+  // después retoma la pregunta del paso actual. Un campo del
+  // flujo solo se llena con una RESPUESTA del cliente, nunca
+  // con una pregunta suya.
+  const cuandoPedir = !saludoPuro && !faq && !ciudad ? preguntaCuandoPedir(textoCliente) : null;
+  const pagoAdelantado = !saludoPuro && !faq ? preguntaPagoAdelantado(textoCliente) : null;
 
   let detectados = {};
   let omitirCaptura = saludoPuro || !!faq || !!ciudad;
@@ -1724,6 +1869,16 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       detectados = {};
       omitirCaptura = true;
     }
+  }
+  // PREGUNTA DE CUÁNDO PEDIR sin día concreto en el mensaje:
+  // no se captura NADA de ella (la frase completa no es la
+  // fecha); se responde la pregunta y el flujo vuelve a pedir
+  // el día concreto. Si el mensaje SÍ trae un día u hora, ese
+  // dato se captura y la respuesta a la pregunta se agrega.
+  const preguntaPedido = !!cuandoPedir && !detectados.fecha && !detectados.hora;
+  if (preguntaPedido) {
+    detectados = {};
+    omitirCaptura = true;
   }
   const { aplicados: nuevos, corregidos } = omitirCaptura
     ? { aplicados: [], corregidos: [] }
@@ -1769,6 +1924,12 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
         partesAire.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
       }
       partesAire.push(idiomaAire === 'en' ? EXPLICACION_AIRE_EN : EXPLICACION_AIRE_ES);
+      // Si el cliente describió su trabajo (ej. «mi garaje es
+      // cerrado bajo techo», o un patio exterior), va además la
+      // recomendación para SU caso antes de volver a preguntar:
+      // la explicación sola no le respondía «¿el mío lleva?».
+      const recAire = recomendacionAire(textoCliente, idioma);
+      if (recAire) partesAire.push(recAire);
       partesAire.push(
         flow.datos.aire
           ? preguntaPara(paso, flow.datos, idioma)
@@ -1817,8 +1978,17 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     nuevos.length > 0 || corregidos.length > 0 || preguntaAclararPago || paso !== pasoPedido;
   const preguntaLegitima =
     saludoPuro || !!faq || !!ciudad || (noSabe && !detectados.medidas) ||
-    esPreguntaPrecio(textoCliente) || !!preguntaSobreAire(textoCliente) || !!detectados.medidas;
+    esPreguntaPrecio(textoCliente) || !!preguntaSobreAire(textoCliente) || !!detectados.medidas ||
+    preguntaPedido || !!pagoAdelantado;
   if (huboAvance) {
+    flow.intentos = 0;
+    flow.intentosPaso = paso;
+  } else if (preguntaLegitima) {
+    // El cliente no está atorado: está PREGUNTANDO algo (precio,
+    // aire, cobertura, cuándo pedir, el momento del pago…). Se
+    // le responde y el contador de intentos se reinicia, para
+    // que la retomada del paso no salga con el texto de
+    // «disculpe la vuelta» como si no hubiera sabido responder.
     flow.intentos = 0;
     flow.intentosPaso = paso;
   } else if (!preguntaLegitima) {
@@ -1862,7 +2032,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     partes.push(lineaMedidas(detectados.medidas, idioma));
   } else if (
     !esNuevo && !nuevos.length && !corregidos.length &&
-    !faq && !ciudad && !noSabe && !escalado
+    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !escalado
   ) {
     partes.push(prefijoContinuacion(flow, idioma));
   }
@@ -1872,6 +2042,13 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   if (ciudad) {
     partes.push(lineaCiudad(ciudad, idioma));
   }
+  if (cuandoPedir) {
+    // Respuesta a «¿cuándo debo pedirlo?»: puede pedir desde
+    // hoy; en cuanto se confirma su pago por adelantado, la
+    // orden queda agendada. El flujo sigue pidiendo el día
+    // concreto (la pregunta del paso va al final, como siempre).
+    partes.push(idioma === 'en' ? LINEA_CUANDO_PEDIR_EN : LINEA_CUANDO_PEDIR_ES);
+  }
   if (noSabe && !detectados.medidas) {
     partes.push(lineaNoSabeYardas(idioma));
   }
@@ -1879,6 +2056,14 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // corta SIN números, y el flujo continúa donde iba.
   if (esPreguntaPrecio(textoCliente)) {
     partes.push(idioma === 'en' ? LINEA_PRECIO_EN : LINEA_PRECIO);
+  }
+  if (pagoAdelantado && !avisoEfectivo) {
+    // Pregunta por el MOMENTO del pago («¿pago el día del
+    // trabajo o debo pagar antes?»): se responde directo con la
+    // regla del dueño y el flujo retoma el paso en que iba. Si
+    // en este turno ya se avisó la regla del efectivo, esa
+    // respuesta ya lo explica y no se duplica la línea.
+    partes.push(idioma === 'en' ? LINEA_PAGO_ADELANTADO_EN : LINEA_PAGO_ADELANTADO_ES);
   }
   if (escalado) {
     partes.push(textoEscalado(paso, flow.datos, idioma));
@@ -2289,10 +2474,12 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
   if (idiomaAireSuelto) {
     conversacion.flow = flujoNuevo('cotizacion', textoCliente);
     db.setConversationFlow(conversacion.id, conversacion.flow);
+    const recSuelta = recomendacionAire(textoCliente, idiomaAireSuelto);
     return {
       responder: true,
       texto:
         (idiomaAireSuelto === 'en' ? EXPLICACION_AIRE_EN : EXPLICACION_AIRE_ES) +
+        (recSuelta ? `\n${recSuelta}` : '') +
         '\n' +
         (idiomaAireSuelto === 'en'
           ? 'Does your concrete need it with air or no air?'
@@ -2359,6 +2546,10 @@ module.exports = {
   fechaCortaEntrega,
   esPreguntaPrecio,
   preguntaSobreAire,
+  recomendacionAire,
+  preguntaCuandoPedir,
+  preguntaPagoAdelantado,
+  preguntaCoberturaCiudad,
   esSaludoPuro,
   detectarIdioma,
   esCancelacion,
