@@ -27,7 +27,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, var(--azul) 0%, var(--verde) 100%);
+  background: #000000;
 }
 .login-card {
   background: var(--blanco);
