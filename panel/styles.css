@@ -75,7 +75,7 @@ body {
 
 /* ---- Topbar ---- */
 .topbar {
-  background: var(--azul);
+  background: #000000;
   color: #fff;
   padding: .7rem 1.2rem;
   display: flex;
