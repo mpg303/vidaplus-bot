@@ -187,11 +187,29 @@ const INTENTS = [
     id: 'saludo',
     label: '👋 Saludo inicial',
     topic: 'su saludo',
+    // Saludos en TRES registros (orden del dueño, 2026-10-27,
+    // caso real Cheko Alvarado: escribió «Dimelo» y el bot no lo
+    // reconoció): FORMALES, INFORMALES y COLOQUIALES. El saludo
+    // es el ÚLTIMO intent de la lista a propósito: cualquier
+    // saludo que venga con un pedido, un precio o una pregunta
+    // concreta lo gana el intent fuerte, y el saludo solo se
+    // queda con los mensajes que son saludo y nada más.
+    // OJO con las palabras cortas peligrosas como substring
+    // («epa» está en «separado», «alo» en «valor», «dime» en
+    // «dime el precio»): esas NO van aquí; se reconocen solo
+    // como mensaje completo o al inicio, vía FRASES_SALUDO /
+    // esSaludoPuro / empiezaConSaludo.
     keywords: [
-      'hola', 'buenas', 'buenos dias', 'buenas tardes',
-      'buenas noches', 'hey', 'saludos', 'que tal', 'qué tal',
-      'hello', 'hi', 'good morning', 'good afternoon',
-      'good evening', 'buen dia', 'buen día',
+      // Formales
+      'buenos dias', 'buenas tardes', 'buenas noches', 'buen dia',
+      'buen día', 'muy buenas', 'saludos cordiales', 'buenas dias',
+      // Informales
+      'hola', 'buenas', 'hey', 'saludos', 'que tal', 'qué tal',
+      'hola buenas', 'hello', 'hi', 'good morning', 'good afternoon',
+      'good evening', 'hey there', 'howdy',
+      // Coloquiales
+      'dimelo', 'que onda', 'que mas', 'que hubo', 'quiubo',
+      'que hay', 'que paso', 'que tranza', 'wenas', 'buenas buenas',
     ],
   },
 ];
@@ -1345,12 +1363,40 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
 }
 
 /**
+ * Frases de saludo en los TRES registros (formal, informal y
+ * coloquial), ordenadas de la más larga a la más corta para que
+ * la frase completa gane sobre su prefijo («hola buenas» antes
+ * que «hola», «que mas pues» antes que «que mas», «dimelo»
+ * antes que «dime»). Incluye a propósito las cortas peligrosas
+ * como SUBSTRING («epa», «alo», «dime», «ola»): aquí solo se
+ * comparan como mensaje completo o como inicio con frontera de
+ * palabra, nunca sueltas en medio del texto, así «está
+ * separado» o «el valor» jamás cuentan como saludo.
+ */
+const FRASES_SALUDO = [
+  'saludos cordiales',
+  'good afternoon',
+  'buenas noches', 'buenas tardes', 'buenas buenas',
+  'good evening', 'good morning', 'que mas pues',
+  'buenos dias', 'buenas dias', 'hola buenas',
+  'que tranza', 'muy buenas',
+  'hey there', 'que rollo',
+  'buen dia', 'que show', 'que onda', 'que hubo', 'que paso',
+  'dimelo', 'que tal', 'que mas', 'que hay', 'saludos',
+  'quiubo', 'buenas',
+  'hello', 'wenas', 'howdy',
+  'hola', 'holi', 'dime',
+  'hey', 'epa', 'alo', 'ola',
+  'hi',
+];
+
+/**
  * ¿El mensaje es SOLO un saludo? («hola», «buenas», «hello»,
- * «buenas tardes», «hola buenas»…). Cuando un cliente retoma una
- * conversación a mitad del flujo y escribe un saludo, el bot debe
- * RETOMAR donde iba (volver a preguntar el dato que falta), nunca
- * guardar el saludo como si fuera un dato (mix, dirección, fecha
- * o nombre) ni mandar la bienvenida de nuevo.
+ * «buenas tardes», «hola buenas», «Dimelo»…). Cuando un cliente
+ * retoma una conversación a mitad del flujo y escribe un saludo,
+ * el bot debe RETOMAR donde iba (volver a preguntar el dato que
+ * falta), nunca guardar el saludo como si fuera un dato (mix,
+ * dirección, fecha o nombre) ni mandar la bienvenida de nuevo.
  */
 function esSaludoPuro(texto) {
   const t = normalizar(texto)
@@ -1358,11 +1404,7 @@ function esSaludoPuro(texto) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!t) return false;
-  const frases = [
-    'buenas noches', 'buenas tardes', 'buenos dias', 'buen dia',
-    'good afternoon', 'good evening', 'good morning',
-    'que tal', 'hola', 'buenas', 'hello', 'hi', 'hey', 'saludos',
-  ];
+  const frases = FRASES_SALUDO;
   let resto = t;
   let consumio = false;
   let avance = true;
@@ -1378,6 +1420,25 @@ function esSaludoPuro(texto) {
     }
   }
   return consumio && resto === '';
+}
+
+/**
+ * ¿El mensaje EMPIEZA con un saludo? («buenas, ocupo cemento»,
+ * «dimelo, necesito 10 yardas»…). El saludo debe coincidir como
+ * frase completa al inicio, con frontera de palabra (la frase
+ * seguida de un espacio o el mensaje entero): así «epa» no se
+ * dispara con «epale…» ni «alo» con «alonso…». Se usa solo como
+ * red de rescate cuando ningún intent fuerte reconoció el
+ * mensaje: si el cliente escribió un pedido detectable, el
+ * intent del pedido ya ganó antes y esto ni se evalúa.
+ */
+function empiezaConSaludo(texto) {
+  const t = normalizar(texto)
+    .replace(/[^a-z ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!t) return false;
+  return FRASES_SALUDO.some((f) => t === f || t.startsWith(f + ' '));
 }
 
 /**
@@ -2501,6 +2562,25 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
     };
   }
 
+  // --- Saludo en cualquier registro sin intent fuerte (orden
+  // del dueño, 2026-10-27; caso real Cheko Alvarado, «Dimelo»):
+  // si ningún intent reconoció el mensaje pero es un saludo puro
+  // o el mensaje EMPIEZA con un saludo, se responde con el
+  // saludo en vez de caer en el «no le entendí». Los saludos que
+  // llegan CON pedido o pregunta detectable nunca pasan por
+  // aquí: su intent fuerte ya ganó en detectarIntent.
+  if (
+    intent.id === 'otro' &&
+    (esSaludoPuro(textoCliente) || empiezaConSaludo(textoCliente))
+  ) {
+    return {
+      responder: true,
+      texto: textoEfectivo('saludo', conversacion.name, idiomaMsg),
+      intent: 'saludo',
+      topic: 'su saludo',
+    };
+  }
+
   // --- Respuesta normal por intent (comportamiento de siempre).
   const texto = textoEfectivo(intent.id, conversacion.name, idiomaMsg);
   return { responder: true, texto, intent: intent.id, topic: intent.topic };
@@ -2551,6 +2631,7 @@ module.exports = {
   preguntaPagoAdelantado,
   preguntaCoberturaCiudad,
   esSaludoPuro,
+  empiezaConSaludo,
   detectarIdioma,
   esCancelacion,
   detectarFAQ,
