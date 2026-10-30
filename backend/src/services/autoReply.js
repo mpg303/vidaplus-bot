@@ -388,7 +388,7 @@ function construirRespuesta(intentId, nombre, idioma = 'es') {
     case 'cotizacion':
       return (
         `Con gusto le cotizamos 🏗️.\n` +
-        `El precio por yarda depende de la planta y la mezcla, ` +
+        `El precio por yarda depende de la dirección del trabajo y la mezcla, ` +
         `así que le preparamos su cotización a la medida:\n\n` +
         `${datosNecesarios()}\n\n` +
         `Mándenos esos datos y le respondemos rapidito.`
@@ -441,10 +441,10 @@ function construirRespuesta(intentId, nombre, idioma = 'es') {
         `${REGLA_EFECTIVO_ES}`
       );
     case 'faq_minimo':
-      // El mínimo real depende de la planta y la zona: NO se inventa cifra.
+      // El mínimo real depende de la dirección del trabajo: NO se inventa cifra.
       return (
-        `El mínimo de yardas lo confirma el especialista, porque depende de la planta ` +
-        `y de la zona de su obra 🙏\n` +
+        `El mínimo de yardas lo confirma el especialista, porque depende de la dirección ` +
+        `del trabajo 🙏\n` +
         `Dígame cuántas yardas necesita y la dirección, y se lo confirmamos enseguida.`
       );
     case 'faq_bomba':
@@ -491,7 +491,7 @@ function construirRespuestaEN(intentId, nombre) {
     case 'cotizacion':
       return (
         `Happy to help with your quote 🏗️.\n` +
-        `Pricing per yard depends on the plant and the mix, ` +
+        `Pricing per yard depends on the job address and the mix, ` +
         `so we prepare your quote to order:\n\n` +
         `${datosNecesariosEN()}\n\n` +
         `Send us those details and we'll get right back to you.`
@@ -541,7 +541,7 @@ function construirRespuestaEN(intentId, nombre) {
     case 'faq_minimo':
       return (
         `The minimum yardage is confirmed by the specialist, since it ` +
-        `depends on the plant and your job's area 🙏\n` +
+        `depends on the job address 🙏\n` +
         `Tell me how many yards you need and the address, and we'll ` +
         `confirm right away.`
       );
@@ -1461,9 +1461,9 @@ function esPreguntaPrecio(texto) {
 
 /** Respuesta corta sobre el precio: jamás se da un número. */
 const LINEA_PRECIO =
-  'El precio depende de la planta y del mix. Con los datos de su orden se lo confirmamos enseguida.';
+  'El precio depende de la dirección del trabajo y del mix. Con los datos de su orden se lo confirmamos enseguida.';
 const LINEA_PRECIO_EN =
-  "Price depends on the plant and the mix. With your order details we'll confirm it right away.";
+  "Price depends on the job address and the mix. With your order details we'll confirm it right away.";
 
 /**
  * ¿El cliente pregunta QUÉ ES el aire o para qué sirve? Mucha gente
