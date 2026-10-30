@@ -1590,10 +1590,12 @@ function preguntaPagoAdelantado(texto) {
   const t = normalizar(texto);
   return (
     /\bdebo pagar\b/.test(t) ||
-    /\b(pago|pagar|pagaria|se paga|hay que pagar|tengo que pagar)\b[^.?!]*\b(por adelantado|adelantado|anticipado|antes|el dia|ese dia|el mismo dia|al entregar|a la entrega|cuando lleguen|cuando entreguen|despues|al final)\b/.test(t) ||
-    /\bcuando\b[^.?!]*\b(se paga|hay que pagar|pago)\b/.test(t) ||
+    /\b(pago|pagar(?:lo|la|le|los|las)?|pagaria|se paga|hay que pagar|tengo que pagar|puedo pagar(?:lo|la|le)?)\b[^.?!]*\b(por adelantado|adelantado|anticipado|antes|el dia|ese dia|el mismo dia|al entregar|a la entrega|cuando lleguen|cuando entreguen|despues|al final)\b/.test(t) ||
+    /\bcuando\b[^.?!]*\b(se paga|hay que pagar|pago|pagar(?:lo|la|le)?)\b/.test(t) ||
     /\bdo i pay\b/.test(t) ||
     /\bwhen do i pay\b/.test(t) ||
+    /\bcan i pay\b/.test(t) ||
+    /\bpay it\b[^.?!]*\b(before|in advance|upfront|on the day|that day)\b/.test(t) ||
     /\b(pay|payment)\b[^.?!]*\b(in advance|upfront)\b/.test(t) ||
     /\bin advance\b[^.?!]*\b(pay|payment)\b/.test(t)
   );
