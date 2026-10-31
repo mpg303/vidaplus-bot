@@ -598,6 +598,7 @@ function datosVacios() {
     hora: null, // texto tal como lo dio el cliente («7 am», «10:00 pm»…)
     slump: null,
     inspeccion: false,
+    nota: null, // nota libre del cliente para la orden (ej. el reparto de una tirada grande en varios días): viaja en la orden para el dueño («Nota:»), no es un paso del flujo
     nombre: null, // nombre de la persona — se pide AL FINAL, con la orden completa
     compania: null, // nombre de su compañía, o «Particular» si no tiene
     pago: null, // forma de pago: «Zelle» | «Tarjeta de débito» | «Tarjeta de crédito» | «Tarjeta» | «Efectivo (por adelantado, con un encargado)»
@@ -1177,6 +1178,50 @@ function extraerNombreAdelantado(raw) {
 }
 
 /**
+ * Captura de nombre/compañía en un mensaje GRANDE multilínea
+ * («todo en uno», falla real del 2026-10-31): el cliente suelta
+ * todos sus datos de golpe, con el nombre y la compañía en
+ * líneas sueltas SIN marcadores («Juan Escalante» / «Vince
+ * Construction LLC» / …), y la captura adelantada — que exige
+ * «soy…» o «compañía es…» — no los veía: la orden avanzaba
+ * sin nombre ni compañía. Solo líneas limpias: la compañía
+ * trae una palabra de giro (construction, LLC…) y el nombre
+ * son 2–3 palabras propias capitalizadas; cualquier línea con
+ * dígitos o con palabras de la orden (psi, slump, yardas,
+ * precio, inspección…) se excluye una por una.
+ */
+function extraerNombreCompaniaMultilinea(raw) {
+  const out = {};
+  if (!raw || !/[\n;]/.test(raw)) return out;
+  const RE_GIRO =
+    /\b(concrete|construction|constru\w+|llc|inc\.?|corp|company|grupo|services|servicios|contractors?|builders?)\b/i;
+  const RE_DATOS =
+    /\b(psi|libras|slump|yardas?|yds?|precio|precios|aire|pompa|bomba|pump|inspecci[oó]n|inspection|tirar|d[ií]as?|direcci[oó]n|address|pago|pagar|zelle)\b/i;
+  for (const lineaCruda of raw.split(/[\n;]/)) {
+    const linea = lineaCruda.trim();
+    if (!linea || /\d/.test(linea) || RE_DATOS.test(linea) || esSaludoPuro(linea)) continue;
+    if (!out.compania && RE_GIRO.test(linea)) {
+      out.compania = limpiarNombre(linea);
+      continue;
+    }
+    if (!out.nombre) {
+      const palabras = linea.split(/\s+/);
+      if (
+        palabras.length >= 2 &&
+        palabras.length <= 3 &&
+        palabras.every((p) => /^[A-ZÁÉÍÓÚÑ][a-záéíóúñ.'-]+$/.test(p))
+      ) {
+        out.nombre = limpiarNombre(linea);
+      }
+    }
+    if (out.nombre && out.compania) break;
+  }
+  if (out.nombre === '') delete out.nombre;
+  if (out.compania === '') delete out.compania;
+  return out;
+}
+
+/**
  * Extrae del mensaje del cliente los datos de la orden que vengan
  * escritos. `paso` es el dato que el bot está pidiendo (si hay flujo):
  * las respuestas cortas se interpretan como ese dato.
@@ -1240,11 +1285,45 @@ function extraerDatos(texto, paso) {
   }
 
   // --- Slump e inspección (transversales: solo si el cliente los menciona) ---
+  // SLUMP (falla real del 2026-10-31): el patrón viejo buscaba
+  // primero el número DESPUÉS de la palabra «slump» con
+  // \D{0,4}, que cruzaba el salto de línea y robaba el primer
+  // número siguiente del mensaje — con «5 slump / 90-100
+  // yardas» anotó slump 90, que era el inicio del rango de
+  // yardas. Regla: el slump EXPLÍCITO («5 slump») manda
+  // siempre; la forma «slump 5» solo vale en la MISMA línea
+  // ([ \t], jamás \s, que cruza líneas) — un rango de yardas
+  // nunca alimenta el slump.
   const mSlump =
-    raw.match(/slump\D{0,4}(\d+(?:[.,]\d+)?)/i) ||
-    raw.match(/(\d+(?:[.,]\d+)?)\s*(?:de\s+)?slump/i);
+    raw.match(/(\d+(?:[.,]\d+)?)[ \t]*(?:de[ \t]+)?slump\b/i) ||
+    raw.match(/slump[ \t]*(?:de[ \t]+)?[:#]?[ \t]*(\d+(?:[.,]\d+)?)/i);
   if (mSlump) d.slump = mSlump[1].replace(',', '.');
-  if (/\binspecci[oó]n\b|\binspection\b/i.test(raw)) d.inspeccion = true;
+  // INSPECCIÓN: la negación manda — «No inspection» / «sin
+  // inspección» es inspeccion = false, NO true (antes la
+  // mención a secas lo marcaba como pedido y la orden salía
+  // con «(inspection)» contra lo que el cliente dijo).
+  if (/\b(no|sin|without)\s+(inspecci[oó]n|inspection)\b/i.test(raw)) d.inspeccion = false;
+  else if (/\binspecci[oó]n\b|\binspection\b/i.test(raw)) d.inspeccion = true;
+
+  // --- Reparto de una tirada en varios días → NOTA de la orden ---
+  // «Si se puede tirar en 2 días 50 y 50» (falla real del
+  // 2026-10-31): el cliente reparte una tirada grande entre
+  // días. No hay ninguna fecha concreta que inventar: se deja
+  // constancia en datos.nota, tal como lo escribió, y la orden
+  // del dueño la lleva en una línea «Nota:». (El rango de
+  // yardas «90-100 yardas» ya lo capturó arriba la captura
+  // normal de yardas, con su extremo: 100.)
+  const mRepartoDiasPrimero = raw.match(
+    /tirar(?:lo|la)?\s+en\s+(\d+)\s+d[ií]as?\b[^.\n]*?(\d+)\s*(?:y|\+)\s*(\d+)/i
+  );
+  const mRepartoParesPrimero = mRepartoDiasPrimero
+    ? null
+    : raw.match(/(\d+)\s*(?:y|\+)\s*(\d+)[^.\n]*?\ben\s+(\d+)\s+d[ií]as?\b/i);
+  if (mRepartoDiasPrimero) {
+    d.nota = `Reparto: tirar en ${mRepartoDiasPrimero[1]} días, ${mRepartoDiasPrimero[2]} y ${mRepartoDiasPrimero[3]}`;
+  } else if (mRepartoParesPrimero) {
+    d.nota = `Reparto: tirar en ${mRepartoParesPrimero[3]} días, ${mRepartoParesPrimero[1]} y ${mRepartoParesPrimero[2]}`;
+  }
 
   // --- Hora ---
   const mHora =
@@ -1275,7 +1354,22 @@ function extraerDatos(texto, paso) {
     d.fecha = raw.replace(/[. ]+$/, '');
   }
 
-  const esDireccion = pareceDireccion(raw);
+  // Dirección con MARCADOR («Dirección 4215 N Beltwood Dallas
+  // Tx»): el cliente la etiqueta él mismo, así que la línea se
+  // toma tal cual aunque la calle no traiga un sufijo
+  // reconocido ni ZIP (falla real del 2026-10-31: «Beltwood»
+  // no es st/ave/dr… y pareceDireccion no la reconocía — la
+  // dirección se perdía entera en el mensaje grande).
+  const mDirMarcada = raw.match(
+    /(?:^|\n)[ \t]*(?:direcci[oó]n|address)[ \t]*[:\-]?[ \t]*([^\n]+)/i
+  );
+  let direccionMarcada = null;
+  if (mDirMarcada) {
+    const cand = mDirMarcada[1].trim().replace(/[. ]+$/, '');
+    if (/\d/.test(cand) && cand.length >= 6) direccionMarcada = cand;
+  }
+
+  const esDireccion = pareceDireccion(raw) || !!direccionMarcada;
 
   // --- Aire (va junto con el mix: «aire o no aire») ---
   // Si el mensaje PREGUNTA sobre el aire («¿qué es el aire?»), la
@@ -1310,7 +1404,15 @@ function extraerDatos(texto, paso) {
     const esOtroDato = !!d.fecha || !!d.hora || !!d.pago || pareceDireccion(raw);
     const esPregunta =
       esPreguntaPrecio(raw) || preguntaSobreAire(raw) || preguntaCuandoPedir(raw) || preguntaPagoAdelantado(raw);
-    if (esDelMix && !esOtroDato && !esPregunta) {
+    // VOLCADO DE DATOS (principio del dueño, 2026-10-31 16:09):
+    // si el mensaje NOMBRA la pompa con su sí/no («No ocupo
+    // pompa», «sin pompa», «sí ocupo pompa»), la respuesta es
+    // EXPLÍCITA y se captura aunque el mismo mensaje traiga
+    // además dirección, día u hora. La guarda de esOtroDato
+    // solo frena el «no» suelto y ambiguo de otros pasos, no
+    // la frase completa sobre la pompa.
+    const mencionaPompa = /\b(pompa|bomba|pump)\b/.test(normalizar(raw));
+    if ((esDelMix && !esOtroDato && !esPregunta) || (mencionaPompa && !esPregunta)) {
       const ocupa = extraerOcupaPompa(raw);
       if (ocupa === true) d.pompa = 'pendiente';
       else if (ocupa === false) d.pompa = 'Sin pompa';
@@ -1336,8 +1438,23 @@ function extraerDatos(texto, paso) {
   const NUMS_MIX = '3000|3500|3600|4000|4500|5000';
   const MIXES_PSI = new Set([3000, 3500, 3600, 4000, 4500, 5000]);
   const producto = detectarProducto(raw);
+  // Menciones EXPLÍCITAS de PSI en el mensaje («3,000 psi»,
+  // «3500 libras»…), con la coma de miles normalizada ANTES
+  // de comparar contra la lista: el patrón viejo (\d{3,5})
+  // calzaba la COLA «000» de «3,000 psi» y un mix que SÍ
+  // existe salía corregido como «no disponible» (falla real
+  // del 2026-10-31: «Ocupo precio de 3,000 psi y otro de
+  // 3,500 psi»). Y si el mensaje trae DOS O MÁS mixes
+  // DISTINTOS, es una comparación o pregunta de precios: no
+  // se elige ninguno y NINGUNO se marca inválido — la frase
+  // de mix no disponible SOLO sale cuando el cliente pide UN
+  // ÚNICO mix que no existe.
+  const mencionesPsi = [
+    ...raw.matchAll(/(\d{1,3}(?:,\d{3})+|\d{3,5})\s*(?:psi|libras)\b/gi),
+  ].map((m) => parseInt(m[1].replace(/,/g, ''), 10));
+  const variosMixes = new Set(mencionesPsi).size > 1;
   const mPsi =
-    raw.match(/(\d{3,5})\s*(?:psi|libras)\b/i) ||
+    raw.match(/(\d{1,3}(?:,\d{3})+|\d{3,5})\s*(?:psi|libras)\b/i) ||
     raw.match(new RegExp(`\\bde\\s+(${NUMS_MIX})\\b`, 'i')) ||
     raw.match(new RegExp(`\\b(${NUMS_MIX})\\s+(?:con|sin)\\s+aire\\b`, 'i')) ||
     raw.match(new RegExp(`\\b(?:mix|mezcla)\\s*(?:de\\s*)?(${NUMS_MIX})\\b`, 'i')) ||
@@ -1353,14 +1470,19 @@ function extraerDatos(texto, paso) {
   } else if (producto) {
     d.mix = producto;
   } else if (mPsi) {
-    const nPsi = parseInt(mPsi[1], 10);
-    if (!MIXES_PSI.has(nPsi)) {
-      // PSI que no existe (ej. «quiero 2500 psi», «5500 psi»):
-      // NO se anota como mix; se marca para que el bot corrija
-      // al cliente con los únicos mixes que hay.
-      d.psiInvalido = mPsi[1];
-    } else {
-      d.mix = `${mPsi[1]} psi`;
+    // Con DOS O MÁS mixes distintos en el mensaje (comparación
+    // o pregunta de precios, variosMixes) no se toca el mix ni
+    // se marca ninguno como inválido: esa detección manda.
+    if (!variosMixes) {
+      const nPsi = parseInt(mPsi[1].replace(/,/g, ''), 10);
+      if (!MIXES_PSI.has(nPsi)) {
+        // PSI que no existe (ej. «quiero 2500 psi», «5500 psi»):
+        // NO se anota como mix; se marca para que el bot corrija
+        // al cliente con los únicos mixes que hay.
+        d.psiInvalido = String(nPsi);
+      } else {
+        d.mix = `${nPsi} psi`;
+      }
     }
   } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora && !correccion && !vaga) {
     // En el paso del mix, el mensaje puede traer un nombre de
@@ -1419,7 +1541,11 @@ function extraerDatos(texto, paso) {
   }
 
   // --- Dirección ---
-  if (esDireccion) {
+  if (direccionMarcada) {
+    // La línea que el cliente etiquetó «Dirección»/«Address»
+    // manda sobre la heurística de sufijos de calle.
+    d.direccion = direccionMarcada;
+  } else if (esDireccion) {
     const dir = capturarDireccion(raw);
     if (dir) d.direccion = dir;
   } else if (
@@ -1470,6 +1596,17 @@ function extraerDatos(texto, paso) {
     if (adelantado.nombre) d.nombre = adelantado.nombre;
     if (adelantado.compania) d.compania = adelantado.compania;
   }
+  // Nombre/compañía en LÍNEAS SUELTAS de un mensaje grande
+  // multilínea («todo en uno»): se capturan aunque el mensaje
+  // traiga además una pregunta de precio u otros datos — el
+  // helper excluye las líneas de datos una por una. Solo
+  // llena lo que falte; lo capturado por las rutas de arriba
+  // (pasos nombre/compañía o marcadores) manda.
+  if (!d.nombre || !d.compania) {
+    const multi = extraerNombreCompaniaMultilinea(raw);
+    if (!d.nombre && multi.nombre) d.nombre = multi.nombre;
+    if (!d.compania && multi.compania) d.compania = multi.compania;
+  }
 
   // --- Forma de pago ---
   // En el paso del pago: si dice solo «tarjeta»/«card» sin
@@ -1508,7 +1645,7 @@ function extraerDatos(texto, paso) {
 function fusionarDatos(flow, d) {
   const aplicados = [];
   const corregidos = [];
-  for (const campo of ['yardas', 'mix', 'aire', 'pompa', 'direccion', 'fecha', 'hora', 'slump', 'nombre', 'compania', 'pago']) {
+  for (const campo of ['yardas', 'mix', 'aire', 'pompa', 'direccion', 'fecha', 'hora', 'slump', 'nombre', 'compania', 'pago', 'nota']) {
     if (!d[campo]) continue;
     // 'pendiente' en pompa no es un dato: es la marca de «dijo
     // que sí ocupa y falta que elija el tipo» — elegir el tipo
@@ -1524,7 +1661,9 @@ function fusionarDatos(flow, d) {
       }
     }
   }
-  if (d.inspeccion) flow.datos.inspeccion = true;
+  // Inspección: la mención explícita manda en AMBOS sentidos —
+  // «No inspection» la deja en false, no solo se enciende.
+  if (d.inspeccion !== undefined) flow.datos.inspeccion = d.inspeccion;
   return { aplicados, corregidos };
 }
 
@@ -1573,6 +1712,8 @@ function confirmacionDe(campo, datos, idioma = 'es') {
           : `noted the company: *${datos.compania}*`;
       case 'pago':
         return `noted the payment: *${pagoDisplay(datos.pago, idioma)}*`;
+      case 'nota':
+        return `noted: *${datos.nota}*`;
       default:
         return 'noted';
     }
@@ -1605,6 +1746,8 @@ function confirmacionDe(campo, datos, idioma = 'es') {
         : `anotada la compañía: *${datos.compania}*`;
     case 'pago':
       return `anotado el pago: *${datos.pago}*`;
+    case 'nota':
+      return `anotada la nota: *${datos.nota}*`;
     default:
       return 'anotado';
   }
@@ -1637,6 +1780,8 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
         return `changed to the company: *${datos.compania}*`;
       case 'pago':
         return `changed to the payment: *${pagoDisplay(datos.pago, idioma)}*`;
+      case 'nota':
+        return `updated: *${datos.nota}*`;
       default:
         return 'updated';
     }
@@ -1669,6 +1814,8 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
         : `lo dejo en la compañía: *${datos.compania}*`;
     case 'pago':
       return `lo dejo en el pago: *${datos.pago}*`;
+    case 'nota':
+      return `lo dejo anotado: *${datos.nota}*`;
     default:
       return 'lo dejo anotado';
   }
@@ -2158,6 +2305,12 @@ function armarConfirmacion(datos, conversacion) {
   // Al final va la forma de pago que eligió el cliente (línea
   // nueva; las líneas del formato del dueño no cambian).
   if (datos.pago) lineas.push(`Pago: ${datos.pago}`);
+  // Nota del cliente (ej. el reparto de la tirada en varios
+  // días, «tirar en 2 días, 50 y 50»): va al final de la orden
+  // para que el dueño la vea tal como el cliente la pidió.
+  if (datos.nota) {
+    lineas.push(`Nota: ${datos.nota}`);
+  }
   return lineas.join('\n');
 }
 
