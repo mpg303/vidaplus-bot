@@ -1496,9 +1496,9 @@ function extraerDatos(texto, paso) {
   // 2026-10-31): el cliente reparte una tirada grande entre
   // días. No hay ninguna fecha concreta que inventar: se deja
   // constancia en datos.nota, tal como lo escribió, y la orden
-  // del dueño la lleva en una línea «Nota:». (El rango de
-  // yardas «90-100 yardas» ya lo capturó arriba la captura de
-  // rangos, anotando el extremo MENOR: 90.)
+  // del dueño la lleva en una línea «Nota:». (Si las partes del
+  // reparto son iguales, la cantidad pasa a ser la de cada día
+  // «plus» y el rango no manda: ver el bloque siguiente.)
   const mRepartoDiasPrimero = raw.match(
     /tirar(?:lo|la)?\s+en\s+(\d+)\s+d[ií]as?\b[^.\n]*?(\d+)\s*(?:y|\+)\s*(\d+)/i
   );
@@ -1509,6 +1509,30 @@ function extraerDatos(texto, paso) {
     d.nota = `Reparto: tirar en ${mRepartoDiasPrimero[1]} días, ${mRepartoDiasPrimero[2]} y ${mRepartoDiasPrimero[3]}`;
   } else if (mRepartoParesPrimero) {
     d.nota = `Reparto: tirar en ${mRepartoParesPrimero[3]} días, ${mRepartoParesPrimero[1]} y ${mRepartoParesPrimero[2]}`;
+  }
+  // REPARTO CON PARTES IGUALES = CANTIDAD POR DÍA «PLUS»
+  // (palabra del dueño, 2026-10-31 18:50: «Entonces serían 50
+  // yds plus»): si el cliente reparte la tirada en días con
+  // partes IGUALES («en 2 días 50 y 50»), el mensaje YA trae la
+  // cantidad que manda: la de CADA DÍA, y va «plus» porque cada
+  // tirada puede crecer un poco. La cantidad de la orden pasa a
+  // ser esa parte (50 plus), el rango «90-100» deja de mandar y
+  // NO se pregunta «¿son 90 o 100 yardas?» — el cliente ya lo
+  // contestó con el reparto. El total estimado (la suma) queda
+  // visible en la nota del reparto. Con partes DESIGUALES
+  // («60 y 40») no se toca nada: manda la regla del rango.
+  const partesReparto = mRepartoDiasPrimero
+    ? [mRepartoDiasPrimero[2], mRepartoDiasPrimero[3]]
+    : mRepartoParesPrimero
+      ? [mRepartoParesPrimero[1], mRepartoParesPrimero[2]]
+      : null;
+  if (
+    partesReparto &&
+    parseFloat(partesReparto[0]) > 0 &&
+    parseFloat(partesReparto[0]) === parseFloat(partesReparto[1])
+  ) {
+    d.yardas = { cantidad: fmtYds(parseFloat(partesReparto[0])), plus: true };
+    delete d.rangoYardas;
   }
 
   // --- Hora ---
