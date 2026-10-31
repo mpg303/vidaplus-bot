@@ -779,6 +779,74 @@ function quitarFrasesAire(texto) {
     .trim();
 }
 
+/**
+ * Texto «limpio» para interpretar el sí/no de la POMPA: se quitan
+ * las frases de OTROS temas que traen su propia negación (el aire
+ * y la inspección), porque cada «no» vale SOLO para la pregunta a
+ * la que responde (falla real del 2026-10-31 16:35: el cliente
+ * respondió «No aire» y el bot anotó TAMBIÉN «sin pompa» — el
+ * «No» era del aire y se filtró al patrón pelado de
+ * extraerOcupaPompa; la pompa jamás se había preguntado).
+ */
+function quitarNegacionesDeOtrosTemas(texto) {
+  return quitarFrasesAire(texto)
+    .replace(/\b(no|sin|without)\s+(inspecci[oó]n|inspection)\b/gi, ' ')
+    .replace(/\b(inspecci[oó]n|inspection)\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * ¿El mensaje ES la respuesta a la pregunta de la pompa (sí/no),
+ * en español o en inglés, llegue en el paso que llegue? Solo
+ * cuenta si el mensaje NOMBRA la pompa (pompa/bomba/pump/boom)
+ * junto a su negación o su afirmación: «no pump», «no pompa»,
+ * «sin pompa», «no boom», «no ocupo pompa», «yes pump»…
+ * Devuelve false (no ocupa), true (sí ocupa) o null (el mensaje
+ * no es esa respuesta). Un «no» PELADO sin nombrar la pompa NO
+ * es respuesta de la pompa fuera de su paso: ese «no» puede ser
+ * de cualquier otra pregunta (falla real del 2026-10-31 16:35:
+ * «No pump» en el paso del día se guardó como si fuera la FECHA).
+ */
+function detectarRespuestaPompa(raw) {
+  const t = ` ${normalizar(raw).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ')} `;
+  if (!/\b(pompa|bomba|pump|boom)\b/.test(t)) return null;
+  if (
+    /\b(no|sin|nunca|never)\b[^.]*\b(pompa|bomba|pump|boom)\b/.test(t) ||
+    /\b(pompa|bomba|pump)\b[^.]*\bno\b/.test(t)
+  ) {
+    return false;
+  }
+  if (
+    /\b(si|yes|yeah|yep|claro)\b[^.]*\b(pompa|bomba|pump|boom)\b/.test(t) ||
+    /\b(ocupo|ocupa|ocupamos|necesito|necesita|quiero|requiero)\b[^.]*\b(pompa|bomba|pump|boom)\b/.test(t)
+  ) {
+    return true;
+  }
+  return null;
+}
+
+/**
+ * ¿El texto PARECE una fecha? (día de semana, hoy/mañana/pasado
+ * mañana, fecha numérica M/D, «D de mes», día del mes suelto o
+ * referencias tipo «la próxima semana»). Es la validación del
+ * paso de la fecha: el respaldo de texto libre SOLO puede
+ * guardar como día algo que parece un día — jamás la respuesta
+ * de otro dato (falla real del 2026-10-31 16:35: «No pump»
+ * quedó anotado como el día de la obra).
+ */
+function pareceFechaTexto(raw) {
+  const t = ` ${normalizar(raw)} `;
+  return (
+    /\b(hoy|pasado manana|manana|today|tomorrow)\b/.test(t) ||
+    /\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(t) ||
+    /\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/.test(t) ||
+    /\b\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/.test(t) ||
+    /\b\d{1,2}\b/.test(t) ||
+    /\b(semana|quincena|fin de mes|proxima|proximo|siguiente|week|month)\b/.test(t)
+  );
+}
+
 /** Limpia un nombre/compañía capturado (espacios y punto final). */
 function limpiarNombre(s) {
   return (s || '').replace(/\s{2,}/g, ' ').replace(/[. ]+$/, '').trim();
@@ -1385,7 +1453,8 @@ function extraerDatos(texto, paso) {
     paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw) &&
     !esPreguntaPrecio(raw) && !preguntaSobreAire(raw) &&
     !preguntaCuandoPedir(raw) && !preguntaPagoAdelantado(raw) &&
-    !correccion && !vaga
+    !correccion && !vaga &&
+    detectarRespuestaPompa(raw) === null && pareceFechaTexto(raw)
   ) {
     // Respuesta corta al «¿para qué día?»: se toma tal cual
     // (una pregunta de precio jamás se toma como fecha, y un
@@ -1394,6 +1463,13 @@ function extraerDatos(texto, paso) {
     // nunca con una PREGUNTA suya — «quiero hacerlo la semana
     // que viene, ¿cuándo debo pedirlo?» no es una fecha, y
     // «¿cuándo se paga?» tampoco.
+    // VALIDACIÓN (2026-10-31 16:35): el texto además debe
+    // PARECER fecha (pareceFechaTexto) y NO ser la respuesta de
+    // otro dato: «No pump» es el sí/no de la POMPA y se rutea a
+    // ese campo en su sección — jamás se guarda como día (es la
+    // misma clase de defecto ya corregido con «¿Puedo pagarlo…?»
+    // tragado como fecha). Lo que no parece fecha no se guarda:
+    // el bot repite la pregunta del día.
     d.fecha = raw.replace(/[. ]+$/, '');
   }
 
@@ -1426,10 +1502,23 @@ function extraerDatos(texto, paso) {
   const aire = preguntaSobreAire(raw) ? null : extraerAire(raw);
   if (aire) d.aire = aire;
 
+  // Respuesta EXPLÍCITA a la pregunta de la pompa (sí/no CON la
+  // pompa nombrada, ES/EN): vale en CUALQUIER paso del flujo —
+  // también en el de la fecha, donde «No pump» se guardaba como
+  // día — y manda sobre la captura del tipo: «No boom» NO es
+  // «boom pump». Si además nombra el OTRO tipo («no boom, mejor
+  // la trailer»), manda el tipo nombrado, no la negación.
+  const respPompa = detectarRespuestaPompa(raw);
+  const esPregunta =
+    esPreguntaPrecio(raw) || preguntaSobreAire(raw) || preguntaCuandoPedir(raw) || preguntaPagoAdelantado(raw);
+  const mencionaOtroTipo = /\b(trailer|arrastre|small\s*line|linea\s*pequena)\b/.test(normalizar(raw));
   // Tipo de pompa (boom / small line / trailer): se captura si
   // el cliente lo menciona en cualquier momento del flujo.
-  const pompaTipo = extraerPompa(raw);
-  if (pompaTipo) {
+  const pompaTipo =
+    respPompa === false && !mencionaOtroTipo ? null : extraerPompa(raw);
+  if (respPompa === false && !mencionaOtroTipo && !esPregunta) {
+    d.pompa = 'Sin pompa';
+  } else if (pompaTipo) {
     d.pompa = pompaTipo;
   } else if (!d.pompa) {
     // ¿Ocupa pompa? (regla del dueño, 2026-10-30): el sí/no se
@@ -1450,8 +1539,6 @@ function extraerDatos(texto, paso) {
     const esDelMix =
       paso === 'mix' || !!d.mix || !!aire || (/\b(pompa|bomba|pump)\b/.test(raw) && d.correccion);
     const esOtroDato = !!d.fecha || !!d.hora || !!d.pago || pareceDireccion(raw);
-    const esPregunta =
-      esPreguntaPrecio(raw) || preguntaSobreAire(raw) || preguntaCuandoPedir(raw) || preguntaPagoAdelantado(raw);
     // VOLCADO DE DATOS (principio del dueño, 2026-10-31 16:09):
     // si el mensaje NOMBRA la pompa con su sí/no («No ocupo
     // pompa», «sin pompa», «sí ocupo pompa»), la respuesta es
@@ -1461,11 +1548,22 @@ function extraerDatos(texto, paso) {
     // la frase completa sobre la pompa.
     const mencionaPompa = /\b(pompa|bomba|pump)\b/.test(normalizar(raw));
     if ((esDelMix && !esOtroDato && !esPregunta) || (mencionaPompa && !esPregunta)) {
-      const ocupa = extraerOcupaPompa(raw);
+      // El sí/no se interpreta sobre el texto SIN las negaciones
+      // de otros temas (quitarNegacionesDeOtrosTemas): cada «no»
+      // vale solo para su pregunta — «No aire» NO marca la pompa
+      // (falla real del 2026-10-31 16:35: el bot dio la pompa
+      // por respondida con el «No» del aire y saltó al día).
+      const ocupa = extraerOcupaPompa(quitarNegacionesDeOtrosTemas(raw));
       if (ocupa === true) d.pompa = 'pendiente';
       else if (ocupa === false) d.pompa = 'Sin pompa';
     }
   }
+  // Una respuesta EXPLÍCITA de la pompa (la nombra con su sí/no)
+  // manda sobre un valor anterior distinto de ese mismo campo:
+  // es el cliente corrigiendo ESE dato, llegue en el paso que
+  // llegue (fusionarDatos lo aplica como corrección solo para
+  // la pompa, sin tocar la regla general de los demás campos).
+  if (respPompa !== null && d.pompa) d.pompaExplicita = true;
 
   // --- Mix ---
   // Primero los PRODUCTOS sin PSI (pea gravel, flowable fill,
@@ -1706,7 +1804,7 @@ function fusionarDatos(flow, d) {
       flow.datos[campo] = d[campo];
       aplicados.push(campo);
     } else if (JSON.stringify(habia) !== JSON.stringify(d[campo])) {
-      if (campo === 'yardas' || d.correccion) {
+      if (campo === 'yardas' || d.correccion || (campo === 'pompa' && d.pompaExplicita)) {
         flow.datos[campo] = d[campo];
         corregidos.push(campo);
       }
