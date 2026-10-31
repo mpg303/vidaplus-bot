@@ -741,6 +741,76 @@ function limpiarNombre(s) {
 }
 
 /**
+ * ¿El cliente está diciendo que NO tiene compañía (que es
+ * particular)? Detector robusto para el paso de la compañía
+ * (falla real del 2026-10-31: el cliente respondió «no tengo»
+ * varias veces y el bot repetía la pregunta, porque el patrón
+ * viejo exigía «no tengo compañía» completo). Acepta TODAS las
+ * palabras y frases con ese significado, en español e inglés,
+ * con la comparación normalizada (minúsculas, sin acentos, sin
+ * puntuación pegada).
+ *
+ * OJO con los falsos positivos: si el mensaje PRESENTA una
+ * compañía con nombre («mi compañía es ABC Construction», «la
+ * empresa se llama XYZ», «company is ABC») manda eso — no es
+ * «sin compañía» aunque traiga un «no» suelto. Y si el texto
+ * suena a nombre de compañía (trae las palabras típicas:
+ * construction, concrete, LLC, services…), es un nombre.
+ */
+function esSinCompania(raw) {
+  const t = normalizar(raw)
+    .replace(/[^a-z0-9']+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!t) return false;
+  // Presenta una compañía con nombre: «…es X» / «se llama X».
+  if (
+    /\b(compania|empresa|negocio|company|business)\s+(es|se llama|is)\s+[a-z0-9]/.test(t)
+  ) {
+    return false;
+  }
+  // Suena a nombre de compañía (nombre propio con giro).
+  if (
+    /\b(concrete|construction|construccion|constructora|llc|inc|corp|services|servicios|contractors?|builders?|remodeling|roofing|landscaping|trucking|grupo|group)\b/.test(
+      t
+    )
+  ) {
+    return false;
+  }
+  // Respuestas completas exactas.
+  if (
+    ['no', 'nope', 'nada', 'na', 'n a', 'none', 'no tengo', 'no company'].includes(t)
+  ) {
+    return true;
+  }
+  return (
+    // --- Español ---
+    /\bno tengo\b/.test(t) || // «no tengo», «no tengo ninguna compañía»…
+    /\bno cuento con\b/.test(t) ||
+    /\bno (es|soy) (empresa|compania|negocio|contratista)\b/.test(t) ||
+    /\bno aplica\b/.test(t) ||
+    /\bsin (compania|empresa|negocio)\b/.test(t) ||
+    /\bningun[oa]\b/.test(t) ||
+    /\bparticular\b/.test(t) ||
+    /\bpersonal\b/.test(t) ||
+    /\bindependiente\b/.test(t) ||
+    /\bpor mi cuenta\b/.test(t) || // «trabajo por mi cuenta»
+    /\bcuenta propia\b/.test(t) ||
+    /\bpara mi\b/.test(t) || // «es para mí», «es para mi casa»
+    /\bmi casa\b/.test(t) ||
+    /\bsolo yo\b/.test(t) ||
+    /\bsoy yo mismo\b/.test(t) ||
+    // --- Inglés ---
+    /\bno (company|business)\b/.test(t) ||
+    /\b(don'?t|do not) have\b/.test(t) || // «i don't have one/a company»
+    /\bself employed\b/.test(t) || // «self employed» y «self-employed»
+    /\bhomeowner\b/.test(t) ||
+    /\bjust me\b/.test(t) ||
+    /\bnot a (company|business|contractor)\b/.test(t)
+  );
+}
+
+/**
  * Interpreta la respuesta a los pasos FINALES de datos del cliente.
  * El bot pregunta el nombre y la compañía UNO POR VEZ (primero
  * «¿A nombre de quién queda la orden?» y después «¿Y cuál es el
@@ -755,22 +825,23 @@ function extraerNombreCompania(raw) {
   const out = {};
   const t = (raw || '').trim();
   if (!t) return out;
-  const esParticular =
-    /\b(particular|no tengo compan\w*|sin compan\w*|no tengo empresa|no es empresa|es personal|solo yo|soy yo mismo|no company|just personal|don'?t have a company|dont have a company|it'?s personal)\b/i.test(
-      normalizar(t)
-    );
+  const esParticular = esSinCompania(t);
   const mNombre = t.match(/(?:a nombre de|mi nombre es|my name is|soy|nombre)\s*[:\-]?\s*([^,;]+)/i);
   const mComp = t.match(/(?:compa[ñn][ií]a|empresa|negocio|company)\s*(?:es|se llama)?\s*[:\-]?\s*(.+)$/i);
   if (mComp && !esParticular) out.compania = limpiarNombre(mComp[1]);
   if (mNombre) {
-    out.nombre = limpiarNombre(
+    const candidato = limpiarNombre(
       mNombre[1].replace(/(?:compa[ñn][ií]a|empresa|negocio|company).*$/i, '')
     );
+    // «soy particular» / «soy independiente» NO son un nombre:
+    // son la respuesta de «sin compañía».
+    if (candidato && !esSinCompania(candidato)) out.nombre = candidato;
   }
   if (!out.nombre && !out.compania) {
     const partes = t.split(/[,;]/).map((s) => s.trim()).filter(Boolean);
     if (partes.length >= 2) {
-      out.nombre = limpiarNombre(partes[0].replace(/^a nombre de\s*/i, ''));
+      const primera = limpiarNombre(partes[0].replace(/^a nombre de\s*/i, ''));
+      if (primera && !esSinCompania(primera)) out.nombre = primera;
       if (!esParticular) {
         out.compania = limpiarNombre(
           partes.slice(1).join(', ').replace(/^(?:compa[ñn][ií]a|empresa|negocio)\s*(?:es|se llama)?\s*[:\-]?\s*/i, '')
@@ -1384,7 +1455,12 @@ function extraerDatos(texto, paso) {
   if ((paso === 'nombre' || paso === 'compania') && !esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
     const hayMarcador =
       /a nombre de|mi nombre es|my name is|nombre\s*[:\-]|compa[ñn]|empresa|negocio|company|particular|soy\b/i.test(raw);
-    if (!vaga && (!correccion || hayMarcador)) {
+    // En el paso de la compañía, un «no» suelto (o cualquier
+    // frase de «sin compañía») SÍ es la respuesta, aunque sea
+    // «vaga» para los demás pasos: si no, el bot repite la
+    // pregunta para siempre (falla real del 2026-10-31).
+    const sinCompania = paso === 'compania' && esSinCompania(raw);
+    if ((sinCompania || !vaga) && (sinCompania || !correccion || hayMarcador)) {
       const cli = extraerNombreCompania(raw);
       if (cli.nombre) d.nombre = cli.nombre;
       if (cli.compania) d.compania = cli.compania;
@@ -2911,4 +2987,5 @@ module.exports = {
   detectarFAQ,
   detectarCiudad,
   esRespuestaVaga,
+  esSinCompania,
 };
