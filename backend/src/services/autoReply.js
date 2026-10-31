@@ -1437,16 +1437,66 @@ function extraerDatos(texto, paso) {
   }
 
   // --- Hora ---
+  // FORMAS NATURALES Y ERRORES DE TECLADO (falla real del
+  // 2026-10-31 16:55): el cliente respondió «7:00 an» (la «n»
+  // por la «m» de «am») y el bot NO lo reconoció: repitió la
+  // pregunta de la hora como si no hubiera respondido. Un
+  // cliente real escribe rápido y con errores; la hora se
+  // acepta en todas sus formas razonables:
+  //  1) con la parte del día en palabras: «7 de la mañana»,
+  //     «7:00 en la tarde», «7 por la noche», «7 in the
+  //     morning» — se guarda la frase tal cual;
+  //  2) con error de teclado en el sufijo, pegado a una hora
+  //     con minutos: «7:00 an» = 7:00 am, «10:30 pn» = 10:30 pm
+  //     — se guarda CORREGIDO (am/pm), no con el error;
+  //  3) con la letra sola al final: «7:00 a» / «7:00 p»;
+  //  4) la forma normal «7 am», «10:30 pm», «a las 7».
+  // OJO: en «7 de la mañana» la palabra «mañana» es la MAÑANA,
+  // no el día de mañana — por eso la fecha se busca sobre una
+  // copia del texto sin esas construcciones (ver textoFecha).
+  const mHoraParteDia =
+    raw.match(
+      /(?:\ba\s+las\s+|\blas\s+)?((?:1[0-2]|0?[1-9])(?::\d{2})?\s+(?:de|en|por)\s+la\s+(?:mañana|tarde|noche))/i
+    ) ||
+    raw.match(
+      /((?:1[0-2]|0?[1-9])(?::\d{2})?\s+in\s+the\s+(?:morning|afternoon|evening))/i
+    );
+  const mHoraErrorTeclado = mHoraParteDia
+    ? null
+    : raw.match(/((?:1[0-2]|0?[1-9]):\d{2})\s*(an|pn)\b/i);
+  const mHoraLetraSola =
+    mHoraParteDia || mHoraErrorTeclado
+      ? null
+      : raw.match(/((?:1[0-2]|0?[1-9]):\d{2})[ \t]+([ap])[.\s]*$/im);
   const mHora =
-    raw.match(/(\d{1,2}(?::\d{2})?\s*(?:a\.?\s?m\.?|p\.?\s?m\.?))/i) ||
-    raw.match(/a las\s+(\d{1,2}(?::\d{2})?)/i);
-  if (mHora) d.hora = mHora[1].trim();
+    mHoraParteDia || mHoraErrorTeclado || mHoraLetraSola
+      ? null
+      : raw.match(/(\d{1,2}(?::\d{2})?\s*(?:a\.?\s?m\.?|p\.?\s?m\.?))/i) ||
+        raw.match(/a las\s+(\d{1,2}(?::\d{2})?)/i);
+  if (mHoraParteDia) d.hora = mHoraParteDia[1].trim();
+  else if (mHoraErrorTeclado)
+    d.hora = `${mHoraErrorTeclado[1]} ${mHoraErrorTeclado[2].toLowerCase() === 'an' ? 'am' : 'pm'}`;
+  else if (mHoraLetraSola)
+    d.hora = `${mHoraLetraSola[1]} ${mHoraLetraSola[2].toLowerCase() === 'a' ? 'am' : 'pm'}`;
+  else if (mHora) d.hora = mHora[1].trim();
 
   // --- Fecha (día de la entrega) ---
+  // La fecha se busca sobre textoFecha: el mismo mensaje SIN
+  // las construcciones «de/en/por la mañana» (ahí «mañana» es
+  // la parte del día de la HORA, no el día de mañana). Sin
+  // esta limpieza, «7 de la mañana» guardaba fecha = «mañana»
+  // (mañana = tomorrow) sin que el cliente diera ningún día.
+  // Un «mañana» suelto («mañana a las 7 de la mañana») SÍ se
+  // sigue detectando como el día: solo se neutraliza el que
+  // va pegado a «de/en/por la».
+  const textoFecha = raw.replace(
+    /(\b(?:de|en|por)\s+la\s+)mañana\b/gi,
+    '$1jornada'
+  );
   const mFecha =
-    raw.match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/) ||
-    raw.match(/\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i) ||
-    raw.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i);
+    textoFecha.match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/) ||
+    textoFecha.match(/\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i) ||
+    textoFecha.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i);
   if (mFecha) {
     d.fecha = mFecha[0].trim();
   } else if (
