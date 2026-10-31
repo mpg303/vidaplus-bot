@@ -10,8 +10,9 @@
 // EN ORDEN — 1) cuántas yardas, 2) qué mix, 3) la dirección,
 // 4) día y hora de la entrega — con estado por conversación
 // (conv.flow en db.js). En el paso del mix se pregunta también si
-// el concreto va «con aire o no aire» (regla del dueño): el paso
-// del mix no se completa hasta tener mix Y aire. Y AL FINAL, ya
+// el concreto va «con aire o no aire» y para qué pompa es (boom
+// pump o small line pump; la trailer es la misma small line): el
+// paso del mix no se completa hasta tener mix, aire Y pompa. Y AL FINAL, ya
 // con la orden completa y ANTES del cierre, el bot pide UNO POR
 // VEZ: 5) el nombre de la persona, 6) el nombre de su compañía
 // (si no tiene compañía, queda «Particular») y 7) la forma de pago
@@ -588,6 +589,7 @@ function datosVacios() {
     yardas: null, // { cantidad: '10', plus: false }
     mix: null,
     aire: null, // 'con aire' | 'no aire' — se pide junto con el mix
+    pompa: null, // 'Boom pump' | 'Small line / Trailer pump' (small line y trailer son la misma) — se pregunta al elegir el mix (regla del dueño, 2026-10-30)
     direccion: null,
     fecha: null, // texto tal como lo dio el cliente («mañana», «10/20/26»…)
     hora: null, // texto tal como lo dio el cliente («7 am», «10:00 pm»…)
@@ -603,8 +605,11 @@ function datosVacios() {
 function pasoActual(flow) {
   return (
     PASOS_FLUJO.find((p) => {
-      // El paso del mix exige mix Y aire («aire o no aire»).
-      if (p === 'mix') return !flow.datos.mix || !flow.datos.aire;
+      // El paso del mix exige mix, aire («aire o no aire») Y el
+      // tipo de pompa (boom o small line/trailer, que son la
+      // misma — regla del dueño, 2026-10-30: se pregunta al
+      // seleccionar el mix).
+      if (p === 'mix') return !flow.datos.mix || !flow.datos.aire || !flow.datos.pompa;
       return !flow.datos[p];
     }) || null
   );
@@ -649,6 +654,30 @@ function extraerAire(raw) {
   }
   if (/\b(con aire|lleva aire|air[-\s]?entrained|with air)\b/i.test(raw) || /\baire\b/i.test(raw) || /\bair\b/i.test(raw)) {
     return 'con aire';
+  }
+  return null;
+}
+
+/**
+ * Tipo de pompa del trabajo (regla del dueño, 2026-10-30): al
+ * seleccionar el mix se pregunta si es para boom pump o para
+ * small line pump. OJO (aclaración del dueño, mismo día): la
+ * small line pump y la trailer pump SON LA MISMA pompa — por
+ * eso «trailer», «de arrastre», «small line» y «línea pequeña»
+ * se anotan con una sola etiqueta. Se captura si el cliente lo
+ * menciona en cualquier mensaje. «Pompa» a secas NO captura
+ * nada (es ambiguo).
+ */
+function extraerPompa(raw) {
+  const t = normalizar(raw);
+  if (/\bboom\b/.test(t) || /\bpluma\b/.test(t)) return 'Boom pump';
+  if (
+    /\btrailer\b/.test(t) ||
+    /\barrastre\b/.test(t) ||
+    /small\s*line/.test(t) ||
+    /linea\s+pequena/.test(t)
+  ) {
+    return 'Small line / Trailer pump';
   }
   return null;
 }
@@ -812,6 +841,22 @@ function detectarProducto(texto) {
   return null;
 }
 
+/**
+ * POMPA MIX 50-50 (regla del dueño, 2026-10-30 20:12): el mix
+ * para pompas de arrastre. Es un mix válido más, junto a los
+ * seis por PSI. Se pide como «pompa mix 50-50», «50-50»,
+ * «50/50», «5050» o «mix para pompa».
+ */
+function detectarPompaMix(texto) {
+  const t = normalizar(texto);
+  if (/\b5050\b/.test(t)) return true;
+  if (/\b50\s*[-/]\s*50\b/.test(t)) return true;
+  if (/\bpompa\s+mix\b/.test(t)) return true;
+  if (/\bmix\s+(?:de\s+|para\s+)?pompa\b/.test(t)) return true;
+  if (/\b50\s+50\b/.test(t) && /\bmix\b/.test(t)) return true;
+  return false;
+}
+
 /** ¿El mensaje es una CORRECCIÓN de un dato ya dado? («mejor 15 yardas», «eran 12»…). */
 function esCorreccion(texto) {
   const t = normalizar(texto);
@@ -958,8 +1003,21 @@ function lineaMedidas(m, idioma) {
  */
 function lineaPsiInvalido(numero, idioma) {
   return idioma === 'en'
-    ? `There's no ${numero} psi mix: the only mixes are 3000, 3500, 3600, 4000, 4500 and 5000 psi.`
-    : `El de ${numero} psi no existe: los únicos mixes son 3000, 3500, 3600, 4000, 4500 y 5000 psi.`;
+    ? `There's no ${numero} psi mix: the only mixes are 3000, 3500, 3600, 4000, 4500 and 5000 psi, plus the 50-50 pump mix (for trailer pumps).`
+    : `El de ${numero} psi no existe: los únicos mixes son 3000, 3500, 3600, 4000, 4500 y 5000 psi, y el pompa mix 50-50 (para pompas de arrastre).`;
+}
+
+/**
+ * Corrección cuando el cliente da un mix por nombre de diseño
+ * de una planta (regla del dueño, 2026-10-30 20:06): esos mixes
+ * de diseño («275-P», «260-0»…) son de una planta específica y
+ * NO se utilizan; solo se trabaja con los seis mixes por PSI.
+ * El dato no se anota y el flujo vuelve a pedir el mix.
+ */
+function lineaMixInvalido(idioma) {
+  return idioma === 'en'
+    ? 'We only work with these mixes: 3000, 3500, 3600, 4000, 4500 and 5000 psi, plus the 50-50 pump mix (for trailer pumps).'
+    : 'Solo trabajamos con estos mixes: 3000, 3500, 3600, 4000, 4500 y 5000 psi, y el pompa mix 50-50 (para pompas de arrastre).';
 }
 
 /**
@@ -1111,6 +1169,11 @@ function extraerDatos(texto, paso) {
   const aire = preguntaSobreAire(raw) ? null : extraerAire(raw);
   if (aire) d.aire = aire;
 
+  // Tipo de pompa (boom / small line / trailer): se captura si
+  // el cliente lo menciona en cualquier momento del flujo.
+  const pompaTipo = extraerPompa(raw);
+  if (pompaTipo) d.pompa = pompaTipo;
+
   // --- Mix ---
   // Primero los PRODUCTOS sin PSI (pea gravel, flowable fill,
   // grout): si el cliente nombra uno, ese producto ES la mezcla
@@ -1136,7 +1199,15 @@ function extraerDatos(texto, paso) {
     raw.match(new RegExp(`\\b(${NUMS_MIX})\\s+(?:con|sin)\\s+aire\\b`, 'i')) ||
     raw.match(new RegExp(`\\b(?:mix|mezcla)\\s*(?:de\\s*)?(${NUMS_MIX})\\b`, 'i')) ||
     (!esDireccion ? raw.match(new RegExp(`\\b(${NUMS_MIX})\\b`)) : null);
-  if (producto) {
+  // POMPA MIX 50-50: mix válido para pompas de arrastre (regla
+  // del dueño, 2026-10-30). Si el mensaje parece una dirección,
+  // el «5050» suelto puede ser el número de la calle: en ese
+  // caso solo cuenta si el cliente menciona la pompa.
+  const pompa =
+    detectarPompaMix(raw) && (!esDireccion || /\bpompa\b/.test(normalizar(raw)));
+  if (pompa) {
+    d.mix = 'Pompa mix 50-50';
+  } else if (producto) {
     d.mix = producto;
   } else if (mPsi) {
     const nPsi = parseInt(mPsi[1], 10);
@@ -1149,12 +1220,14 @@ function extraerDatos(texto, paso) {
       d.mix = `${mPsi[1]} psi`;
     }
   } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora && !correccion && !vaga) {
-    // En el paso del mix, el mensaje puede ser la descripción del
-    // mix (ej. «High early mix / mix 275-P»), tal como la dio el
-    // cliente, sin la frase del aire (ese dato va aparte). Pero
-    // SOLO si parece un mix de verdad: «gracias» o texto basura
-    // NO se anotan como mix (se re-pregunta con ejemplos). Una
-    // pregunta de precio o sobre el aire tampoco es un mix.
+    // En el paso del mix, el mensaje puede traer un nombre de
+    // diseño de planta (ej. «mix 275-P»): regla del dueño
+    // (2026-10-30) — esos NO se utilizan ni se anotan; solo los
+    // seis mixes por PSI. Se marca d.mixInvalido para corregir
+    // al cliente con la lista. Y SOLO si parece un mix de
+    // verdad: «gracias» o texto basura NO disparan la corrección
+    // (se re-pregunta con ejemplos). Una pregunta de precio o
+    // sobre el aire tampoco es un mix.
     const mixTexto = esPreguntaPrecio(raw) || preguntaSobreAire(raw) ? '' : quitarFrasesAire(raw);
     // Un número SOLO como respuesta («2500», «de 2500»): si no
     // está en la lista de mixes que existen (3000, 3500, 3600,
@@ -1172,7 +1245,10 @@ function extraerDatos(texto, paso) {
       // se tocan).
       d.psiInvalido = numEnTexto[1];
     } else if (mixTexto && pareceMix(mixTexto)) {
-      d.mix = mixTexto.replace(/[. ]+$/, '');
+      // Parece un mix, pero es un nombre de diseño de una planta
+      // (ej. «mix 275-P», «260-0»): NO se anota como mix; se
+      // marca para corregir al cliente con la lista de los seis.
+      d.mixInvalido = mixTexto.replace(/[. ]+$/, '');
     }
   } else {
     const mMix = raw.match(/\b(?:mix|mezcla)\b[^,.;]*/i);
@@ -1180,12 +1256,13 @@ function extraerDatos(texto, paso) {
       const textoMix = quitarFrasesAire(mMix[0]).replace(/[. ]+$/, '');
       // «mix de 2500» sin la palabra psi: un número de 4 cifras
       // que no está en la lista de mixes dentro del texto es el
-      // mismo PSI inválido (los nombres de diseño tipo
-      // «mix 275-P» o «260-0» no traen 4 cifras seguidas y no
-      // se tocan).
+      // mismo PSI inválido. Un nombre de diseño («mix 275-P»,
+      // «260-0», «high early») es un mix que NO se utiliza: se
+      // marca mixInvalido (solo si trae dígitos o «early», para
+      // no disparar la corrección con una pregunta sobre mixes).
       const nMix = textoMix.match(/\b(\d{4})\b/);
       if (nMix && !MIXES_PSI.has(parseInt(nMix[1], 10))) d.psiInvalido = nMix[1];
-      else d.mix = textoMix;
+      else if (/\d/.test(textoMix) || /early/i.test(textoMix)) d.mixInvalido = textoMix;
     }
   }
 
@@ -1283,7 +1360,7 @@ function extraerDatos(texto, paso) {
 function fusionarDatos(flow, d) {
   const aplicados = [];
   const corregidos = [];
-  for (const campo of ['yardas', 'mix', 'aire', 'direccion', 'fecha', 'hora', 'slump', 'nombre', 'compania', 'pago']) {
+  for (const campo of ['yardas', 'mix', 'aire', 'pompa', 'direccion', 'fecha', 'hora', 'slump', 'nombre', 'compania', 'pago']) {
     if (!d[campo]) continue;
     const habia = flow.datos[campo];
     if (!habia) {
@@ -1324,6 +1401,8 @@ function confirmacionDe(campo, datos, idioma = 'es') {
         return `got the mix: *${datos.mix}*`;
       case 'aire':
         return `noted: concrete *${aireDisplay(datos.aire, idioma)}*`;
+      case 'pompa':
+        return `noted the pump: *${datos.pompa}*`;
       case 'direccion':
         return `got the *address*`;
       case 'fecha':
@@ -1351,6 +1430,8 @@ function confirmacionDe(campo, datos, idioma = 'es') {
       return `anotado el mix: *${datos.mix}*`;
     case 'aire':
       return `anotado: concreto *${datos.aire}*`;
+    case 'pompa':
+      return `anotada la pompa: *${datos.pompa}*`;
     case 'direccion':
       return `anotada la *dirección*`;
     case 'fecha':
@@ -1382,6 +1463,8 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
         return `changed to the mix: *${datos.mix}*`;
       case 'aire':
         return `changed to: concrete *${aireDisplay(datos.aire, idioma)}*`;
+      case 'pompa':
+        return `changed to the pump: *${datos.pompa}*`;
       case 'direccion':
         return `changed to the address: *${datos.direccion}*`;
       case 'fecha':
@@ -1405,6 +1488,8 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
       return `lo dejo en el mix: *${datos.mix}*`;
     case 'aire':
       return `lo dejo: concreto *${datos.aire}*`;
+    case 'pompa':
+      return `lo dejo en la pompa: *${datos.pompa}*`;
     case 'direccion':
       return `lo dejo en la dirección: *${datos.direccion}*`;
     case 'fecha':
@@ -1694,6 +1779,12 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
             ? 'Does the concrete need air or no air? Air helps against cold weather in outdoor work; indoor floors are usually ordered without air.'
             : 'And does the concrete need it with air or no air?';
         }
+        if (datos.mix && datos.aire && !datos.pompa) {
+          // Con el mix se pregunta el tipo de pompa (regla del
+          // dueño, 2026-10-30): boom o small line (la trailer
+          // pump es la misma small line).
+          return 'What pump is the concrete for: boom pump or small line pump (trailer pump)?';
+        }
         if (!datos.mix && datos.aire) {
           return conEjemplo
             ? 'What mix or strength (PSI) do you need? For example: 3000 psi or 4000 psi.'
@@ -1742,6 +1833,12 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
         return conEjemplo
           ? '¿El concreto va con aire o no aire? El aire ayuda contra el frío en trabajos de exterior; para interiores suele pedirse sin aire.'
           : '¿Y el concreto va con aire o no aire?';
+      }
+      if (datos.mix && datos.aire && !datos.pompa) {
+        // Con el mix se pregunta el tipo de pompa (regla del
+        // dueño, 2026-10-30): boom o small line (la trailer
+        // pump es la misma small line).
+        return '¿Para qué pompa es el concreto: boom pump o small line pump (trailer pump)?';
       }
       if (!datos.mix && datos.aire) {
         return conEjemplo
@@ -1881,7 +1978,7 @@ function armarConfirmacion(datos, conversacion) {
   const lineas = [
     `${fechaCortaEntrega(datos.fecha)} ${nombreCliente}${datos.compania ? ` / ${datos.compania}` : ''}`,
     `${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}`,
-    `${datos.mix}${datos.aire ? ` ${datos.aire}` : ''}`,
+    `${datos.mix}${datos.aire ? ` ${datos.aire}` : ''}${datos.pompa ? ` (${datos.pompa})` : ''}`,
     `${datos.direccion}`,
     `${datos.hora} jobsite`,
     `Slump${datos.slump ? ` ${datos.slump}` : ''}${datos.inspeccion ? ' (inspection)' : ''}`,
@@ -1901,6 +1998,7 @@ function resumenCliente(datos, nombre, idioma = 'es') {
       `All set${n}! ✅ Your order is registered:\n` +
       `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
       `• Mix: ${datos.mix}${datos.aire ? `, ${aireDisplay(datos.aire, idioma)}` : ''}\n` +
+      (datos.pompa ? `• Pump: ${datos.pompa}\n` : '') +
       `• Address: ${datos.direccion}\n` +
       `• Day: ${datos.fecha} — ${datos.hora}\n` +
       (datos.pago ? `• Payment: ${pagoDisplay(datos.pago, idioma)}\n` : '') +
@@ -1914,6 +2012,7 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     `¡Listo${n}! ✅ Ya quedó registrada su orden:\n` +
     `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
     `• Mix: ${datos.mix}${datos.aire ? `, ${datos.aire}` : ''}\n` +
+    (datos.pompa ? `• Pompa: ${datos.pompa}\n` : '') +
     `• Dirección: ${datos.direccion}\n` +
     `• Día: ${datos.fecha} — ${datos.hora}\n` +
     (datos.pago ? `• Pago: ${datos.pago}\n` : '') +
@@ -2106,7 +2205,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const preguntaLegitima =
     saludoPuro || !!faq || !!ciudad || (noSabe && !detectados.medidas) ||
     esPreguntaPrecio(textoCliente) || !!preguntaSobreAire(textoCliente) || !!detectados.medidas ||
-    preguntaPedido || !!pagoAdelantado || !!detectados.psiInvalido;
+    preguntaPedido || !!pagoAdelantado || !!detectados.psiInvalido || !!detectados.mixInvalido;
   if (huboAvance) {
     flow.intentos = 0;
     flow.intentosPaso = paso;
@@ -2159,7 +2258,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     partes.push(lineaMedidas(detectados.medidas, idioma));
   } else if (
     !esNuevo && !nuevos.length && !corregidos.length &&
-    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !escalado
+    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !detectados.mixInvalido && !escalado
   ) {
     partes.push(prefijoContinuacion(flow, idioma));
   }
@@ -2198,6 +2297,13 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     // (3000, 3500, 3600, 4000, 4500, 5000) y el flujo vuelve a
     // pedir el mix (el dato inválido no se anotó).
     partes.push(lineaPsiInvalido(detectados.psiInvalido, idioma));
+  }
+  if (detectados.mixInvalido) {
+    // El cliente dio un mix por nombre de diseño de planta
+    // (ej. «275-P»): esos no se utilizan; se le corrige con la
+    // lista de los únicos mixes (los seis por PSI) y el flujo
+    // vuelve a pedir el mix (el dato no se anotó).
+    partes.push(lineaMixInvalido(idioma));
   }
   if (escalado) {
     partes.push(textoEscalado(paso, flow.datos, idioma));
