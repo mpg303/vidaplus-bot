@@ -949,6 +949,29 @@ function lineaMedidas(m, idioma) {
 }
 
 /**
+ * Corrección cuando el cliente pide un PSI que NO existe
+ * (regla del dueño, 2026-10-30): el 2500 psi no existe; las
+ * mezclas van de 3000 a 5000 psi. La pregunta del paso (qué mix
+ * necesita) va enseguida, como siempre, al final de la respuesta.
+ */
+function lineaPsiInvalido(numero, idioma) {
+  return idioma === 'en'
+    ? `There's no ${numero} psi mix: mixes run from 3000 to 5000 psi.`
+    : `El de ${numero} psi no existe: las mezclas van de 3000 a 5000 psi.`;
+}
+
+/**
+ * Aviso cuando el mix pasa de 5000 psi (regla del dueño,
+ * 2026-10-30): de 5000 para arriba son «early mix» y secan
+ * rápido. Se avisa una vez, en el turno en que el mix se anota.
+ */
+function lineaEarlyMix(mix, idioma) {
+  return idioma === 'en'
+    ? `Heads up: ${mix} is an early mix — it sets fast.`
+    : `Ojo: el de ${mix} es un early mix, seca rápido.`;
+}
+
+/**
  * Captura ADELANTADA de nombre/compañía cuando el cliente los da
  * sin que se le estén pidiendo («…, soy Juan Pérez, particular»):
  * solo con marcadores claros, para no capturar cualquier texto.
@@ -1108,7 +1131,12 @@ function extraerDatos(texto, paso) {
   // una dirección (podría ser el número de la calle), pero «de
   // 3000» o «3000 con aire» SÍ se capturan aunque venga la
   // dirección en el mismo mensaje (antes ese mix se perdía).
-  const NUMS_MIX = '2500|3000|3500|4000|4500|5000|5500|6000';
+  // REGLA DEL DUEÑO (2026-10-30): el 2500 psi NO existe; las
+  // mezclas van de 3000 a 5000 psi, y de 5000 para arriba son
+  // «early mix» (secan rápido). Por eso el 2500 ya no está en la
+  // lista: un PSI menor de 3000 se marca d.psiInvalido y el bot
+  // corrige al cliente con el rango real, sin anotarlo como mix.
+  const NUMS_MIX = '3000|3500|4000|4500|5000|5500|6000';
   const producto = detectarProducto(raw);
   const mPsi =
     raw.match(/(\d{3,5})\s*(?:psi|libras)\b/i) ||
@@ -1119,7 +1147,15 @@ function extraerDatos(texto, paso) {
   if (producto) {
     d.mix = producto;
   } else if (mPsi) {
-    d.mix = `${mPsi[1]} psi`;
+    const nPsi = parseInt(mPsi[1], 10);
+    if (nPsi < 3000) {
+      // PSI que no existe (ej. «quiero 2500 psi»): NO se anota
+      // como mix; se marca para que el bot corrija al cliente.
+      d.psiInvalido = mPsi[1];
+    } else {
+      d.mix = `${mPsi[1]} psi`;
+      if (nPsi > 5000) d.mixEarly = true;
+    }
   } else if (paso === 'mix' && !esDireccion && !d.fecha && !d.hora && !correccion && !vaga) {
     // En el paso del mix, el mensaje puede ser la descripción del
     // mix (ej. «High early mix / mix 275-P»), tal como la dio el
@@ -1128,10 +1164,44 @@ function extraerDatos(texto, paso) {
     // NO se anotan como mix (se re-pregunta con ejemplos). Una
     // pregunta de precio o sobre el aire tampoco es un mix.
     const mixTexto = esPreguntaPrecio(raw) || preguntaSobreAire(raw) ? '' : quitarFrasesAire(raw);
-    if (mixTexto && pareceMix(mixTexto)) d.mix = mixTexto.replace(/[. ]+$/, '');
+    // Un número SOLO como respuesta («2500», «de 2500»): si es
+    // menor de 3000 es el mismo PSI que no existe — se marca
+    // inválido en vez de anotarlo como mix de texto libre.
+    const soloNum = mixTexto.match(/^\s*(?:de\s+)?(\d{3,5})\s*(?:psi|libras)?\s*$/i);
+    const numEnTexto = mixTexto.match(/\b(\d{4})\b/);
+    if (soloNum && parseInt(soloNum[1], 10) < 3000) {
+      d.psiInvalido = soloNum[1];
+    } else if (numEnTexto && parseInt(numEnTexto[1], 10) < 3000) {
+      // «un mix de 2500» como respuesta al paso del mix: el
+      // número de 4 cifras menor de 3000 dentro del texto es el
+      // PSI inválido, no un nombre de diseño («mix 275-P» o
+      // «260-0» no traen 4 cifras seguidas y no se tocan).
+      d.psiInvalido = numEnTexto[1];
+    } else if (mixTexto && pareceMix(mixTexto)) {
+      d.mix = mixTexto.replace(/[. ]+$/, '');
+      if (numEnTexto && parseInt(numEnTexto[1], 10) > 5000) d.mixEarly = true;
+    }
   } else {
     const mMix = raw.match(/\b(?:mix|mezcla)\b[^,.;]*/i);
-    if (mMix) d.mix = quitarFrasesAire(mMix[0]).replace(/[. ]+$/, '');
+    if (mMix) {
+      const textoMix = quitarFrasesAire(mMix[0]).replace(/[. ]+$/, '');
+      // «mix de 2500» sin la palabra psi: un número de 4 cifras
+      // menor de 3000 dentro del texto es el mismo PSI inválido
+      // (los nombres de diseño tipo «mix 275-P» o «260-0» no
+      // traen 4 cifras seguidas y no se tocan).
+      const nMix = textoMix.match(/\b(\d{4})\b/);
+      if (nMix && parseInt(nMix[1], 10) < 3000) d.psiInvalido = nMix[1];
+      else d.mix = textoMix;
+    }
+  }
+
+  // Si el PSI inválido era el ÚNICO número del mensaje, la
+  // captura de yardas (un número suelto en el paso de yardas se
+  // toma como cantidad) pudo anotarlo como yardas («un mix de
+  // 2500» dejaba «2500 yds»): ese número era el PSI, no las
+  // yardas — se deshace esa captura.
+  if (d.psiInvalido && d.yardas && d.yardas.cantidad === d.psiInvalido) {
+    delete d.yardas;
   }
 
   // --- Dirección ---
@@ -2042,7 +2112,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const preguntaLegitima =
     saludoPuro || !!faq || !!ciudad || (noSabe && !detectados.medidas) ||
     esPreguntaPrecio(textoCliente) || !!preguntaSobreAire(textoCliente) || !!detectados.medidas ||
-    preguntaPedido || !!pagoAdelantado;
+    preguntaPedido || !!pagoAdelantado || !!detectados.psiInvalido;
   if (huboAvance) {
     flow.intentos = 0;
     flow.intentosPaso = paso;
@@ -2095,7 +2165,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     partes.push(lineaMedidas(detectados.medidas, idioma));
   } else if (
     !esNuevo && !nuevos.length && !corregidos.length &&
-    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !escalado
+    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !escalado
   ) {
     partes.push(prefijoContinuacion(flow, idioma));
   }
@@ -2127,6 +2197,17 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     // en este turno ya se avisó la regla del efectivo, esa
     // respuesta ya lo explica y no se duplica la línea.
     partes.push(idioma === 'en' ? LINEA_PAGO_ADELANTADO_EN : LINEA_PAGO_ADELANTADO_ES);
+  }
+  if (detectados.psiInvalido) {
+    // El cliente pidió una resistencia que NO existe (ej. 2500
+    // psi): se le corrige con el rango real del dueño y el flujo
+    // vuelve a pedir el mix (el dato inválido no se anotó).
+    partes.push(lineaPsiInvalido(detectados.psiInvalido, idioma));
+  }
+  if (detectados.mixEarly && (nuevos.includes('mix') || corregidos.includes('mix'))) {
+    // Mix arriba de 5000 psi: es «early mix» y seca rápido; se
+    // avisa una vez, en el turno en que se anota.
+    partes.push(lineaEarlyMix(flow.datos.mix, idioma));
   }
   if (escalado) {
     partes.push(textoEscalado(paso, flow.datos, idioma));
