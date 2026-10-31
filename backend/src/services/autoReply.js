@@ -1347,13 +1347,47 @@ function extraerDatos(texto, paso) {
   const vaga = esRespuestaVaga(raw);
 
   // --- Yardas (+ plus) ---
+  // RANGO DE YARDAS (regla del dueño, 2026-10-31 17:33): si el
+  // cliente da un rango («90-100 yardas», «90 a 100 yardas»,
+  // «de noventa a cien yardas»), JAMÁS se anota el número alto:
+  // se anota el MENOR y el bot pregunta «¿Son 90 o son 100
+  // yardas?» (la pregunta la arma manejarFlujo con
+  // d.rangoYardas). ¿Por qué? Palabra del dueño: si se le ponen
+  // las 100 y no las necesita, no las paga — él está eligiendo
+  // la cantidad menor. (Antes la captura normal tomaba el
+  // número pegado a «yardas», que en un rango es el ALTO.)
+  const NUMEROS_PALABRA_YDS = {
+    diez: 10, veinte: 20, treinta: 30, cuarenta: 40, cincuenta: 50,
+    sesenta: 60, setenta: 70, ochenta: 80, noventa: 90, cien: 100, ciento: 100,
+  };
+  const fmtYds = (n) => (Number.isInteger(n) ? String(n) : String(n));
+  const mRangoYds =
+    raw.match(/(\d+(?:[.,]\d+)?)\s*(?:-|a)\s*(\d+(?:[.,]\d+)?)\s*(?:yds?|yards?|yardas?)\b/i) ||
+    raw.match(/entre\s+(\d+(?:[.,]\d+)?)\s+y\s+(\d+(?:[.,]\d+)?)\s*(?:yds?|yards?|yardas?)\b/i);
+  const mRangoYdsPalabras = !mRangoYds
+    ? raw.match(/\b(diez|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento)\s+a\s+(diez|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento)\s+(?:yardas?|yds?|yards?)\b/i)
+    : null;
+  if (mRangoYds || mRangoYdsPalabras) {
+    const v1 = mRangoYds
+      ? parseFloat(mRangoYds[1].replace(',', '.'))
+      : NUMEROS_PALABRA_YDS[mRangoYdsPalabras[1].toLowerCase()];
+    const v2 = mRangoYds
+      ? parseFloat(mRangoYds[2].replace(',', '.'))
+      : NUMEROS_PALABRA_YDS[mRangoYdsPalabras[2].toLowerCase()];
+    const bajo = Math.min(v1, v2);
+    const alto = Math.max(v1, v2);
+    if (alto > bajo) {
+      d.yardas = { cantidad: fmtYds(bajo), plus: /\bplus\b/i.test(raw) || raw.includes('+') };
+      d.rangoYardas = { bajo: fmtYds(bajo), alto: fmtYds(alto) };
+    }
+  }
   const mYds = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:yds?|yards?|yardas?)\b/i);
-  if (mYds) {
+  if (!d.yardas && mYds) {
     d.yardas = {
       cantidad: mYds[1].replace(',', '.'),
       plus: /\bplus\b/i.test(raw) || raw.includes('+'),
     };
-  } else if (paso === 'yardas') {
+  } else if (!d.yardas && paso === 'yardas') {
     const mNum = raw.match(/^[^0-9]*(\d+(?:[.,]\d+)?)[^0-9]*$/);
     if (mNum) {
       // OJO (falla real 2026-10-22): un número PEGADO a «psi» o
@@ -1422,8 +1456,8 @@ function extraerDatos(texto, paso) {
   // días. No hay ninguna fecha concreta que inventar: se deja
   // constancia en datos.nota, tal como lo escribió, y la orden
   // del dueño la lleva en una línea «Nota:». (El rango de
-  // yardas «90-100 yardas» ya lo capturó arriba la captura
-  // normal de yardas, con su extremo: 100.)
+  // yardas «90-100 yardas» ya lo capturó arriba la captura de
+  // rangos, anotando el extremo MENOR: 90.)
   const mRepartoDiasPrimero = raw.match(
     /tirar(?:lo|la)?\s+en\s+(\d+)\s+d[ií]as?\b[^.\n]*?(\d+)\s*(?:y|\+)\s*(\d+)/i
   );
@@ -2679,6 +2713,73 @@ function textoPlantaCerrada7am(idioma) {
     : 'A esa hora la planta ya está cerrada 🏭 Se la puedo colocar a las *7 am del día siguiente*. ¿Le sirve?';
 }
 
+function textoPreguntaRangoYardas(rango, idioma) {
+  return idioma === 'en'
+    ? `Is it *${rango.bajo}* or *${rango.alto}* yards?`
+    : `¿Son *${rango.bajo}* o *${rango.alto}* yardas?`;
+}
+
+/**
+ * ACLARACIÓN DEL RANGO DE YARDAS (regla del dueño, 2026-10-31
+ * 17:33): el cliente dio un rango («90-100 yardas») y ya se
+ * anotó el número MENOR; el bot preguntó «¿Son 90 o son 100
+ * yardas?». Aquí se interpreta la respuesta: un número suelto
+ * (el que sea) queda como la cantidad; «la mayor» sube al
+ * alto; «la menor» confirma el bajo. Cualquier otra cosa (el
+ * cliente siguió con otro dato) NO es respuesta al rango: se
+ * deja el número menor anotado y el flujo normal procesa el
+ * mensaje (null).
+ */
+function manejarRangoYardas(conversacion, textoCliente, idioma, intentDetectado) {
+  const flow = conversacion.flow;
+  const rango = flow.rangoYardasPendiente;
+  if (!rango) return null;
+  const guardar = () => {
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+  };
+  const decision = (texto) => ({
+    responder: true,
+    texto,
+    intent: flow.tipo,
+    topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+    intentDetectado,
+  });
+  const confirmarYSiguiente = () => {
+    guardar();
+    const paso = pasoActual(flow);
+    const conf = `Perfecto, ${confirmacionDe('yardas', flow.datos, idioma)}.`;
+    return decision(paso ? `${conf}\n${preguntaPara(paso, flow.datos, idioma)}` : conf);
+  };
+  const t = ` ${normalizar(textoCliente)} `;
+  if (/\b(mayor|mas alta|la alta|maximo|mas grande)\b/.test(t)) {
+    flow.datos.yardas = { ...(flow.datos.yardas || { plus: false }), cantidad: rango.alto };
+    flow.rangoYardasPendiente = null;
+    return confirmarYSiguiente();
+  }
+  if (/\b(menor|mas baja|la baja|minimo|mas pequena)\b/.test(t)) {
+    flow.rangoYardasPendiente = null;
+    return confirmarYSiguiente();
+  }
+  const mSolo = textoCliente
+    .trim()
+    .replace(/[. ]+$/, '')
+    .match(/^(?:las?\s+)?(\d+(?:[.,]\d+)?)\s*(?:yardas?|yds?|yards?)?$/i);
+  if (mSolo) {
+    flow.datos.yardas = {
+      ...(flow.datos.yardas || { plus: false }),
+      cantidad: mSolo[1].replace(',', '.'),
+    };
+    flow.rangoYardasPendiente = null;
+    return confirmarYSiguiente();
+  }
+  // No fue respuesta al rango: queda el número menor y el
+  // mensaje se procesa como dato normal del flujo.
+  flow.rangoYardasPendiente = null;
+  guardar();
+  return null;
+}
+
 /**
  * ACLARACIÓN DE LA HORA (regla del dueño, 2026-10-31 17:27):
  * si el cliente da una hora 1-12 sin decir am o pm, el bot
@@ -2787,6 +2888,14 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const idioma = flow.idioma;
   flow.turnos = (flow.turnos || 0) + 1;
   const pasoPedido = pasoActual(flow);
+
+  // ACLARACIÓN DEL RANGO DE YARDAS en curso («¿son 90 o son
+  // 100?»): un número suelto como respuesta es la cantidad
+  // elegida, jamás otro dato del flujo.
+  if (flow.rangoYardasPendiente) {
+    const rRango = manejarRangoYardas(conversacion, textoCliente, idioma, intentDetectado);
+    if (rRango) return rRango;
+  }
 
   // ACLARACIÓN DE LA HORA en curso (¿am o pm? / oferta de las
   // 7 am del día siguiente): la respuesta del cliente se
@@ -2904,6 +3013,21 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     }
   }
 
+  // RANGO DE YARDAS recién anotado (regla del dueño,
+  // 2026-10-31 17:33): la cantidad ya quedó en el número MENOR
+  // (eso lo hizo extraerDatos); aquí se deja la pregunta
+  // «¿Son X o Y yardas?» como la pregunta de este turno. Si el
+  // flujo se completa en este mismo turno, no hay pregunta:
+  // manda el número menor.
+  let preguntaRangoYardas = false;
+  if (
+    !omitirCaptura && detectados.rangoYardas &&
+    (nuevos.includes('yardas') || corregidos.includes('yardas'))
+  ) {
+    flow.rangoYardasPendiente = detectados.rangoYardas;
+    preguntaRangoYardas = true;
+  }
+
   // Regla del efectivo registrada en ESTE turno: el aviso va en
   // la respuesta de este turno — y también en el cierre si el
   // flujo se completa aquí mismo (el pago es el último paso). Si
@@ -2995,7 +3119,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
 
   // ---- Anti-bucle: contar intentos fallidos en el MISMO paso ----
   const huboAvance =
-    nuevos.length > 0 || corregidos.length > 0 || preguntaAclararPago || preguntaAmPm || oferta7am || paso !== pasoPedido;
+    nuevos.length > 0 || corregidos.length > 0 || preguntaAclararPago || preguntaAmPm || oferta7am || preguntaRangoYardas || paso !== pasoPedido;
   const preguntaLegitima =
     saludoPuro || !!faq || !!ciudad || (noSabe && !detectados.medidas) ||
     esPreguntaPrecio(textoCliente) || !!preguntaSobreAire(textoCliente) || !!detectados.medidas ||
@@ -3052,7 +3176,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     partes.push(lineaMedidas(detectados.medidas, idioma));
   } else if (
     !esNuevo && !nuevos.length && !corregidos.length &&
-    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !detectados.mixInvalido && !escalado && !preguntaAmPm && !oferta7am
+    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !detectados.mixInvalido && !escalado && !preguntaAmPm && !oferta7am && !preguntaRangoYardas
   ) {
     partes.push(prefijoContinuacion(flow, idioma));
   }
@@ -3107,7 +3231,9 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
         ? textoPlantaCerrada7am(idioma)
         : preguntaAmPm
           ? textoPreguntaAmPm(idioma)
-          : preguntaAclararPago
+          : preguntaRangoYardas
+            ? textoPreguntaRangoYardas(flow.rangoYardasPendiente, idioma)
+            : preguntaAclararPago
             ? idioma === 'en'
               ? 'Debit or credit?'
               : '¿Débito o crédito?'
