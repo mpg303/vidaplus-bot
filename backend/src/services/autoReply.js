@@ -2911,9 +2911,21 @@ function saludoContinuacion(nombre, idioma = 'es') {
 /**
  * Decide si el bot debe responder a un mensaje entrante del cliente.
  * NO responde si:
- *  - el bot está pausado para esa conversación (lo atiende un humano), o
+ *  - el bot está pausado para esa conversación y el humano sigue
+ *    activo (pausa manual del panel, ver REANUDACIÓN abajo), o
  *  - un ESPECIALISTA respondió hace menos de AUTOREPLY_HUMAN_PAUSE_MIN minutos
  *    (para no interrumpir la conversación humana).
+ * REANUDACIÓN DE LA PAUSA (orden de Jesus, 2026-10-31: «cuando
+ * entra el humano al chat el bot deja de responder»): la pausa
+ * manual (botPaused) ya NO duerme al bot para siempre. Protege al
+ * humano solo mientras está activo en la conversación: si el
+ * especialista escribió hace menos de AUTOREPLY_HUMAN_PAUSE_MIN
+ * minutos (o la pausa se puso hace menos de eso y aún no escribe),
+ * el bot se queda en silencio; pasada esa ventana de inactividad
+ * del humano, la pausa vence sola, se limpia y el bot vuelve a
+ * responder sin que nadie tenga que reanudarlo a mano. Una pausa
+ * vieja sin hora registrada (anterior a este arreglo) se trata
+ * como vencida: son justo las conversaciones que quedaron mudas.
  * DESPERTAR (orden de Jesus, 2026-10-21): la marca needsHuman ya NO
  * duerme al bot para siempre. Si la conversación está marcada
  * (flujo completado o el cliente pidió una persona) y el cliente
@@ -2935,13 +2947,31 @@ function saludoContinuacion(nombre, idioma = 'es') {
  * de la respuesta cuando ya se conoce (ctx.idioma).
  */
 function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text', ctx = {}) {
-  if (conversacion.botPaused) {
-    return { responder: false, motivo: 'bot pausado por especialista' };
-  }
   const ultimoHumano = db.lastMessageFrom(conversacion.id, 'ESPECIALISTA');
   const minutosHumano = ultimoHumano
     ? (Date.now() - new Date(ultimoHumano.timestamp).getTime()) / 60000
     : null;
+
+  if (conversacion.botPaused) {
+    // Pausa manual del panel: protege al humano SOLO mientras está
+    // activo (su último mensaje manda; si aún no escribió, manda la
+    // hora en que se puso la pausa). Vencida la ventana de
+    // inactividad, la pausa se limpia sola y el bot reanuda sus
+    // respuestas en este mismo turno, sin intervención de nadie.
+    const refPausaMs = ultimoHumano
+      ? new Date(ultimoHumano.timestamp).getTime()
+      : conversacion.botPausedAt
+        ? new Date(conversacion.botPausedAt).getTime()
+        : null;
+    const minutosPausa =
+      refPausaMs === null ? null : (Date.now() - refPausaMs) / 60000;
+    if (minutosPausa !== null && minutosPausa < cfg.autoreplyHumanPauseMin) {
+      return { responder: false, motivo: 'bot pausado por especialista' };
+    }
+    db.setBotPaused(conversacion.id, false);
+    conversacion.botPaused = false;
+    conversacion.botPausedAt = null;
+  }
 
   if (conversacion.needsHuman) {
     // ¿Un especialista tomó la conversación DESPUÉS de la marca y

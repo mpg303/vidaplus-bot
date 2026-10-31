@@ -29,7 +29,7 @@ const DB_FILE = path.join(cfg.dataDir, 'db.json');
 
 function vacia() {
   return {
-    conversations: [], // { id, waId, name, lastMessageAt, lastPreview, unread, botPaused, needsHuman, needsHumanAt, surveySentAt, flow, docsTarjeta }
+    conversations: [], // { id, waId, name, lastMessageAt, lastPreview, unread, botPaused, botPausedAt, needsHuman, needsHumanAt, surveySentAt, flow, docsTarjeta }
     // docsTarjeta: documentos de la forma de autorización de tarjeta, o null:
     // { estado: 'pendiente'|'completo', forma: bool, fotos: 0..4, idioma, enviadoAt, completadoAt }
     // flow: estado del flujo de cotización/pedido en curso, o null:
@@ -214,6 +214,7 @@ function upsertConversation(waId, name) {
       lastPreview: '',
       unread: 0,
       botPaused: false,
+      botPausedAt: null,
       needsHuman: false,
       needsHumanAt: null,
       surveySentAt: null,
@@ -310,6 +311,11 @@ function setBotPaused(id, paused) {
   const c = getConversation(id);
   if (c) {
     c.botPaused = !!paused;
+    // Hora en que se puso la pausa: decidirRespuesta la usa para
+    // vencer la pausa por inactividad del humano (la pausa ya no
+    // duerme al bot para siempre; ver autoReply.js, arreglo del
+    // 2026-10-31). Al reanudar, la hora se limpia.
+    c.botPausedAt = paused ? ahoraIso() : null;
     save();
   }
   return c;
