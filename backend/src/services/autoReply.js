@@ -10,9 +10,12 @@
 // EN ORDEN — 1) cuántas yardas, 2) qué mix, 3) la dirección,
 // 4) día y hora de la entrega — con estado por conversación
 // (conv.flow en db.js). En el paso del mix se pregunta también si
-// el concreto va «con aire o no aire» y para qué pompa es (boom
-// pump o small line pump; la trailer es la misma small line): el
-// paso del mix no se completa hasta tener mix, aire Y pompa. Y AL FINAL, ya
+// el concreto va «con aire o no aire»; enseguida se pregunta si va
+// a ocupar alguna pompa: si dice que SÍ, se le dan las opciones
+// (boom pump o small line pump; la trailer es la misma small
+// line) y el paso no se completa hasta que elija; si dice que NO,
+// queda «sin pompa» y la orden sigue con la dirección (regla del
+// dueño, 2026-10-30). Y AL FINAL, ya
 // con la orden completa y ANTES del cierre, el bot pide UNO POR
 // VEZ: 5) el nombre de la persona, 6) el nombre de su compañía
 // (si no tiene compañía, queda «Particular») y 7) la forma de pago
@@ -589,7 +592,7 @@ function datosVacios() {
     yardas: null, // { cantidad: '10', plus: false }
     mix: null,
     aire: null, // 'con aire' | 'no aire' — se pide junto con el mix
-    pompa: null, // 'Boom pump' | 'Small line / Trailer pump' (small line y trailer son la misma) — se pregunta al elegir el mix (regla del dueño, 2026-10-30)
+    pompa: null, // null = aún no se preguntó · 'pendiente' = dijo que sí ocupa y falta que elija · 'Sin pompa' = dijo que no · 'Boom pump' | 'Small line / Trailer pump' (small line y trailer son la misma) — se pregunta tras el aire (regla del dueño, 2026-10-30)
     direccion: null,
     fecha: null, // texto tal como lo dio el cliente («mañana», «10/20/26»…)
     hora: null, // texto tal como lo dio el cliente («7 am», «10:00 pm»…)
@@ -605,11 +608,13 @@ function datosVacios() {
 function pasoActual(flow) {
   return (
     PASOS_FLUJO.find((p) => {
-      // El paso del mix exige mix, aire («aire o no aire») Y el
-      // tipo de pompa (boom o small line/trailer, que son la
-      // misma — regla del dueño, 2026-10-30: se pregunta al
-      // seleccionar el mix).
-      if (p === 'mix') return !flow.datos.mix || !flow.datos.aire || !flow.datos.pompa;
+      // El paso del mix exige mix, aire («aire o no aire») Y la
+      // respuesta de la pompa: tras el aire se pregunta si va a
+      // ocupar alguna pompa; si dice que no, queda «Sin pompa»
+      // y la orden sigue; si dice que sí, debe elegir el tipo
+      // (boom o small line/trailer, que son la misma) — regla
+      // del dueño, 2026-10-30.
+      if (p === 'mix') return !flow.datos.mix || !flow.datos.aire || !flow.datos.pompa || flow.datos.pompa === 'pendiente';
       return !flow.datos[p];
     }) || null
   );
@@ -659,9 +664,46 @@ function extraerAire(raw) {
 }
 
 /**
- * Tipo de pompa del trabajo (regla del dueño, 2026-10-30): al
- * seleccionar el mix se pregunta si es para boom pump o para
- * small line pump. OJO (aclaración del dueño, mismo día): la
+ * ¿El cliente va a ocupar alguna pompa? (regla del dueño,
+ * 2026-10-30): tras el aire se pregunta primero si ocupa pompa.
+ * Devuelve true («sí, ocupo pompa»), false («no») o null si el
+ * mensaje no lo dice. Formas: sí / yes / afirmaciones claras con
+ * «pompa/bomba/pump»; no / no ocupo / sin pompa / no ocupa /
+ * ninguna / negaciones claras de pompa. OJO: «boom», «trailer»
+ * o «small line» NO son un «sí» aquí — son el TIPO de pompa y
+ * los captura extraerPompa; esta función es solo para el
+ * sí/no desnudo de la pregunta directa.
+ */
+function extraerOcupaPompa(raw) {
+  const t = ` ${normalizar(raw).replace(/[¿?¡!.,;:]/g, ' ').replace(/\s+/g, ' ')} `;
+  if (
+    /\bno\b[^.]*\b(ocupo|ocupa|ocupamos|necesito|necesita|quiero|requiero|requiere|lleva|usa|usamos)\b/.test(t) ||
+    /\bno\b[^.]*\bpompa\b/.test(t) ||
+    /\bsin pompa\b/.test(t) ||
+    /\bninguna\b/.test(t) ||
+    /\bno\b/.test(t) ||
+    /\bnope\b/.test(t) ||
+    /\bnone\b/.test(t)
+  ) {
+    return false;
+  }
+  if (
+    /^\s*(si|yes|yeah|yep|claro|afirmativo|correcto|asi es)\b/.test(t) ||
+    /\b(si|yes)\b[^.]*\b(ocupo|ocupa|ocupamos|necesito|necesita|quiero|requiero|lleva)\b/.test(t) ||
+    /\bocupo\b[^.]*\b(pompa|bomba|pump)\b/.test(t) ||
+    /\b(necesito|quiero|requiero|ocupo)\b[^.]*\b(pompa|bomba|pump)\b/.test(t)
+  ) {
+    return true;
+  }
+  return null;
+}
+
+/**
+ * Tipo de pompa del trabajo (regla del dueño, 2026-10-30): se
+ * pregunta tras confirmar que el cliente SÍ ocupa pompa. Antes
+ * la pregunta era directa por el tipo; ahora primero va el
+ * sí/no y solo si dice que sí se le dan las opciones. OJO
+ * (aclaración del dueño, mismo día): la
  * small line pump y la trailer pump SON LA MISMA pompa — por
  * eso «trailer», «de arrastre», «small line» y «línea pequeña»
  * se anotan con una sola etiqueta. Se captura si el cliente lo
@@ -1174,7 +1216,35 @@ function extraerDatos(texto, paso) {
   // Tipo de pompa (boom / small line / trailer): se captura si
   // el cliente lo menciona en cualquier momento del flujo.
   const pompaTipo = extraerPompa(raw);
-  if (pompaTipo) d.pompa = pompaTipo;
+  if (pompaTipo) {
+    d.pompa = pompaTipo;
+  } else if (!d.pompa) {
+    // ¿Ocupa pompa? (regla del dueño, 2026-10-30): el sí/no se
+    // interpreta SOLO si el mensaje es del tema del mix: o ya
+    // estamos en el paso del mix, o el mensaje mismo trae mix o
+    // aire (el caso «todo en uno»: «10 yardas de 4000 con aire
+    // sin pompa» llega con el paso todavía en yardas). Nunca se
+    // adivina un «no» suelto en otros pasos. Y no debe ser un
+    // dato de otro paso posterior (dirección, fecha, hora o
+    // pago) ni una pregunta. OJO: el aire de ESTE mensaje quedó
+    // en `aire` (variable local), no en d.aire — la fusión con
+    // el flujo ocurre después, en fusionarDatos. Si dice que
+    // sí: 'pendiente' (le tocan las opciones); si dice que no:
+    // 'Sin pompa' y la orden sigue con la dirección.
+    // Una corrección explícita que menciona la pompa («mejor
+    // sin pompa») también cuenta como mensaje del tema, llegue
+    // en el paso que llegue.
+    const esDelMix =
+      paso === 'mix' || !!d.mix || !!aire || (/\b(pompa|bomba|pump)\b/.test(raw) && d.correccion);
+    const esOtroDato = !!d.fecha || !!d.hora || !!d.pago || pareceDireccion(raw);
+    const esPregunta =
+      esPreguntaPrecio(raw) || preguntaSobreAire(raw) || preguntaCuandoPedir(raw) || preguntaPagoAdelantado(raw);
+    if (esDelMix && !esOtroDato && !esPregunta) {
+      const ocupa = extraerOcupaPompa(raw);
+      if (ocupa === true) d.pompa = 'pendiente';
+      else if (ocupa === false) d.pompa = 'Sin pompa';
+    }
+  }
 
   // --- Mix ---
   // Primero los PRODUCTOS sin PSI (pea gravel, flowable fill,
@@ -1364,7 +1434,10 @@ function fusionarDatos(flow, d) {
   const corregidos = [];
   for (const campo of ['yardas', 'mix', 'aire', 'pompa', 'direccion', 'fecha', 'hora', 'slump', 'nombre', 'compania', 'pago']) {
     if (!d[campo]) continue;
-    const habia = flow.datos[campo];
+    // 'pendiente' en pompa no es un dato: es la marca de «dijo
+    // que sí ocupa y falta que elija el tipo» — elegir el tipo
+    // la reemplaza como dato nuevo, no como corrección.
+    const habia = campo === 'pompa' && flow.datos[campo] === 'pendiente' ? null : flow.datos[campo];
     if (!habia) {
       flow.datos[campo] = d[campo];
       aplicados.push(campo);
@@ -1404,7 +1477,10 @@ function confirmacionDe(campo, datos, idioma = 'es') {
       case 'aire':
         return `noted: concrete *${aireDisplay(datos.aire, idioma)}*`;
       case 'pompa':
-        return `noted the pump: *${datos.pompa}*`;
+        if (datos.pompa === 'pendiente') return 'noted: *pump needed*';
+        return datos.pompa === 'Sin pompa'
+          ? 'noted: *no pump*'
+          : `noted the pump: *${datos.pompa}*`;
       case 'direccion':
         return `got the *address*`;
       case 'fecha':
@@ -1433,7 +1509,10 @@ function confirmacionDe(campo, datos, idioma = 'es') {
     case 'aire':
       return `anotado: concreto *${datos.aire}*`;
     case 'pompa':
-      return `anotada la pompa: *${datos.pompa}*`;
+      if (datos.pompa === 'pendiente') return 'anotado: *sí, ocupa pompa*';
+      return datos.pompa === 'Sin pompa'
+        ? 'anotado: *sin pompa*'
+        : `anotada la pompa: *${datos.pompa}*`;
     case 'direccion':
       return `anotada la *dirección*`;
     case 'fecha':
@@ -1466,7 +1545,10 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
       case 'aire':
         return `changed to: concrete *${aireDisplay(datos.aire, idioma)}*`;
       case 'pompa':
-        return `changed to the pump: *${datos.pompa}*`;
+        if (datos.pompa === 'pendiente') return 'changed to: *pump needed*';
+        return datos.pompa === 'Sin pompa'
+          ? 'changed to: *no pump*'
+          : `changed to the pump: *${datos.pompa}*`;
       case 'direccion':
         return `changed to the address: *${datos.direccion}*`;
       case 'fecha':
@@ -1491,7 +1573,10 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
     case 'aire':
       return `lo dejo: concreto *${datos.aire}*`;
     case 'pompa':
-      return `lo dejo en la pompa: *${datos.pompa}*`;
+      if (datos.pompa === 'pendiente') return 'lo dejo: *sí, ocupa pompa*';
+      return datos.pompa === 'Sin pompa'
+        ? 'lo dejo: *sin pompa*'
+        : `lo dejo en la pompa: *${datos.pompa}*`;
     case 'direccion':
       return `lo dejo en la dirección: *${datos.direccion}*`;
     case 'fecha':
@@ -1782,10 +1867,14 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
             : 'And does the concrete need it with air or no air?';
         }
         if (datos.mix && datos.aire && !datos.pompa) {
-          // Con el mix se pregunta el tipo de pompa (regla del
-          // dueño, 2026-10-30): boom o small line (la trailer
-          // pump es la misma small line).
-          return 'What pump is the concrete for: boom pump or small line pump (trailer pump)?';
+          // Tras el aire se pregunta si va a ocupar alguna
+          // pompa (regla del dueño, 2026-10-30): si dice que no,
+          // la orden sigue; solo si dice que sí se le dan las
+          // opciones de pompa.
+          return 'Will you need a pump for this job?';
+        }
+        if (datos.mix && datos.aire && datos.pompa === 'pendiente') {
+          return 'What kind of pump: boom pump or small line pump (trailer pump)?';
         }
         if (!datos.mix && datos.aire) {
           return conEjemplo
@@ -1837,10 +1926,14 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
           : '¿Y el concreto va con aire o no aire?';
       }
       if (datos.mix && datos.aire && !datos.pompa) {
-        // Con el mix se pregunta el tipo de pompa (regla del
-        // dueño, 2026-10-30): boom o small line (la trailer
-        // pump es la misma small line).
-        return '¿Para qué pompa es el concreto: boom pump o small line pump (trailer pump)?';
+        // Tras el aire se pregunta si va a ocupar alguna pompa
+        // (regla del dueño, 2026-10-30): si dice que no, la
+        // orden sigue; solo si dice que sí se le dan las
+        // opciones de pompa.
+        return '¿Va a ocupar alguna pompa para este trabajo?';
+      }
+      if (datos.mix && datos.aire && datos.pompa === 'pendiente') {
+        return '¿Qué pompa ocupa: boom pump o small line pump (trailer pump)?';
       }
       if (!datos.mix && datos.aire) {
         return conEjemplo
@@ -1980,7 +2073,7 @@ function armarConfirmacion(datos, conversacion) {
   const lineas = [
     `${fechaCortaEntrega(datos.fecha)} ${nombreCliente}${datos.compania ? ` / ${datos.compania}` : ''}`,
     `${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}`,
-    `${datos.mix}${datos.aire ? ` ${datos.aire}` : ''}${datos.pompa ? ` (${datos.pompa})` : ''}`,
+    `${datos.mix}${datos.aire ? ` ${datos.aire}` : ''}${datos.pompa && datos.pompa !== 'pendiente' ? ` (${datos.pompa})` : ''}`,
     `${datos.direccion}`,
     `${datos.hora} jobsite`,
     `Slump${datos.slump ? ` ${datos.slump}` : ''}${datos.inspeccion ? ' (inspection)' : ''}`,
@@ -2000,7 +2093,7 @@ function resumenCliente(datos, nombre, idioma = 'es') {
       `All set${n}! ✅ Your order is registered:\n` +
       `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
       `• Mix: ${datos.mix}${datos.aire ? `, ${aireDisplay(datos.aire, idioma)}` : ''}\n` +
-      (datos.pompa ? `• Pump: ${datos.pompa}\n` : '') +
+      (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente' ? `• Pump: ${datos.pompa}\n` : '') +
       `• Address: ${datos.direccion}\n` +
       `• Day: ${datos.fecha} — ${datos.hora}\n` +
       (datos.pago ? `• Payment: ${pagoDisplay(datos.pago, idioma)}\n` : '') +
@@ -2014,7 +2107,7 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     `¡Listo${n}! ✅ Ya quedó registrada su orden:\n` +
     `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
     `• Mix: ${datos.mix}${datos.aire ? `, ${datos.aire}` : ''}\n` +
-    (datos.pompa ? `• Pompa: ${datos.pompa}\n` : '') +
+    (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente' ? `• Pompa: ${datos.pompa}\n` : '') +
     `• Dirección: ${datos.direccion}\n` +
     `• Día: ${datos.fecha} — ${datos.hora}\n` +
     (datos.pago ? `• Pago: ${datos.pago}\n` : '') +
