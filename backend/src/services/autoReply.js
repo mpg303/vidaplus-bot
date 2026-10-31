@@ -1479,6 +1479,32 @@ function extraerDatos(texto, paso) {
   else if (mHoraLetraSola)
     d.hora = `${mHoraLetraSola[1]} ${mHoraLetraSola[2].toLowerCase() === 'a' ? 'am' : 'pm'}`;
   else if (mHora) d.hora = mHora[1].trim();
+  else if (paso === 'hora') {
+    // HORA SUELTA SIN SUFIJO (falla real del 2026-10-31 17:18):
+    // a la pregunta «¿A qué hora lo necesita en la obra?» el
+    // cliente respondió solo «7» y el bot repitió la pregunta
+    // como si no hubiera respondido — el cliente NO va a
+    // escribir todo perfecto. Si el bot acaba de preguntar la
+    // hora y TODO el mensaje es un número de hora válido
+    // («7», «7:00», «12», «14»), eso ES la hora y se guarda
+    // tal cual (como ya se guarda «a las 7» → «7»). Solo en
+    // este paso: en cualquier otro, un número suelto puede ser
+    // yardas, slump u otra cosa. «7 yardas» o un rango no
+    // entran (la expresión va anclada a todo el mensaje), y un
+    // número fuera de 0-23 o con minutos >59 no es hora.
+    const mHoraSuelta = raw
+      .trim()
+      .replace(/[. ]+$/, '')
+      .match(/^(\d{1,2})(?::(\d{2}))?$/);
+    if (mHoraSuelta) {
+      const hNum = parseInt(mHoraSuelta[1], 10);
+      const minNum =
+        mHoraSuelta[2] === undefined ? null : parseInt(mHoraSuelta[2], 10);
+      if (hNum <= 23 && (minNum === null || minNum <= 59)) {
+        d.hora = mHoraSuelta[0];
+      }
+    }
+  }
 
   // --- Fecha (día de la entrega) ---
   // La fecha se busca sobre textoFecha: el mismo mensaje SIN
