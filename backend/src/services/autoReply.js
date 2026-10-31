@@ -2616,12 +2616,186 @@ function textoEscalado(paso, datos, idioma) {
     : `Disculpe la vuelta 🙏 Mejor se lo pregunto con un ejemplo: ${ejemplo}\nO si prefiere, escriba *especialista* y le atiende una persona enseguida.`;
 }
 
+/**
+ * Minutos desde medianoche de una hora ya capturada («7 am»,
+ * «7:00 pm», «7 de la tarde», «7 de la mañana», «19:00», «7»),
+ * o null si no se puede interpretar.
+ */
+function horaAMinutos(texto) {
+  if (!texto) return null;
+  const t = String(texto).toLowerCase();
+  const m = /(\d{1,2})(?::(\d{2}))?/.exec(t);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  if (min > 59) return null;
+  const esPm =
+    /\bp\.?\s?m\.?\b/.test(t) || /\b(tarde|noche|afternoon|evening|night)\b/.test(t);
+  const esAm =
+    /\ba\.?\s?m\.?\b/.test(t) || /\b(mañana|manana|morning)\b/.test(t);
+  if (esPm) {
+    if (h < 12) h += 12;
+  } else if (esAm) {
+    if (h === 12) h = 0;
+  } else if (h > 23) return null;
+  return h * 60 + min;
+}
+
+/** ¿La hora guardada es un número suelto 1-12 sin calificador («7», «7:00», «12»)? */
+function esHoraSueltaAmbigua(texto) {
+  const m = /^(\d{1,2})(?::(\d{2}))?$/.exec(String(texto || '').trim());
+  if (!m) return false;
+  const h = parseInt(m[1], 10);
+  return h >= 1 && h <= 12;
+}
+
+/**
+ * Interpreta la respuesta a la pregunta «¿Esa hora es am o pm?»:
+ * 'am', 'pm' o null. «mañana» aquí es LA MAÑANA (la parte del
+ * día), no el día de mañana — por eso esta interpretación corre
+ * ANTES de la captura normal, que guardaría «mañana» como fecha.
+ */
+function interpretarAmPm(texto) {
+  const t = ` ${normalizar(texto)} `;
+  const pm = /\bp\.?\s?m\.?\b/.test(t) || /\b(tarde|noche|afternoon|evening|night)\b/.test(t);
+  const am = /\ba\.?\s?m\.?\b/.test(t) || /\b(manana|morning)\b/.test(t);
+  if (pm && !am) return 'pm';
+  if (am && !pm) return 'am';
+  return null;
+}
+
+function textoPreguntaAmPm(idioma) {
+  return idioma === 'en' ? 'Is that time *am* or *pm*?' : '¿Esa hora es *am* o *pm*?';
+}
+
+/**
+ * Oferta cuando la hora pedida cae con la planta cerrada
+ * (regla del dueño, 2026-10-31): no se rechaza al cliente, se
+ * le busca una opción — las 7 am del día siguiente.
+ */
+function textoPlantaCerrada7am(idioma) {
+  return idioma === 'en'
+    ? 'The plant is already closed at that time 🏭 I can place it at *7 am the next day*. Does that work for you?'
+    : 'A esa hora la planta ya está cerrada 🏭 Se la puedo colocar a las *7 am del día siguiente*. ¿Le sirve?';
+}
+
+/**
+ * ACLARACIÓN DE LA HORA (regla del dueño, 2026-10-31 17:27):
+ * si el cliente da una hora 1-12 sin decir am o pm, el bot
+ * PREGUNTA «¿am o pm?» en vez de guardarla a ciegas. Si la
+ * respuesta cae después de las 5:00 pm, la planta ya está
+ * cerrada: se le ofrece tirarla a las 7 am del día siguiente
+ * («buscándole opciones al cliente») y, si acepta, la orden
+ * queda a las 7 am con la nota de lo pedido. Devuelve la
+ * decisión ya armada, o null si el mensaje no es respuesta a
+ * la aclaración (trae otra hora, una pregunta de precio…) y el
+ * flujo normal debe procesarlo.
+ */
+function manejarAclaracionHora(conversacion, textoCliente, idioma, intentDetectado) {
+  const flow = conversacion.flow;
+  const guardar = () => {
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+  };
+  const decision = (texto) => ({
+    responder: true,
+    texto,
+    intent: flow.tipo,
+    topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+    intentDetectado,
+  });
+  const confirmarHoraYSiguiente = () => {
+    guardar();
+    const paso = pasoActual(flow);
+    const conf = `Perfecto, ${confirmacionDe('hora', flow.datos, idioma)}.`;
+    return decision(paso ? `${conf}\n${preguntaPara(paso, flow.datos, idioma)}` : conf);
+  };
+
+  if (flow.esperaAceptacion7am) {
+    const oferta = flow.esperaAceptacion7am;
+    // Si trae OTRA hora completa, manda esa: se procesa normal.
+    if (extraerDatos(textoCliente, 'hora').hora) {
+      flow.esperaAceptacion7am = null;
+      guardar();
+      return null;
+    }
+    const t = ` ${normalizar(textoCliente)} `;
+    if (/\b(si|ok|dale|claro|sale|bueno|perfecto|yes|yeah|me sirve|esta bien|de acuerdo)\b/.test(t)) {
+      flow.esperaAceptacion7am = null;
+      flow.datos.hora = '7 am';
+      const notaNueva =
+        idioma === 'en'
+          ? `Asked for ${oferta.original} (plant closed); accepted 7 am the next day`
+          : `Pidió ${oferta.original} (planta cerrada); aceptó 7 am del día siguiente`;
+      flow.datos.nota = flow.datos.nota ? `${flow.datos.nota}; ${notaNueva}` : notaNueva;
+      return confirmarHoraYSiguiente();
+    }
+    if (/^\s*no\b/i.test(textoCliente) || /\bno me sirve\b/.test(t)) {
+      flow.esperaAceptacion7am = null;
+      guardar();
+      return decision(preguntaPara('hora', flow.datos, idioma, true));
+    }
+    if (esPreguntaPrecio(textoCliente) || detectarFAQ(textoCliente)) {
+      guardar();
+      return null;
+    }
+    guardar();
+    return decision(textoPlantaCerrada7am(idioma));
+  }
+
+  if (flow.horaPendiente) {
+    const base = flow.horaPendiente;
+    // Si trae OTRA hora completa («mejor a las 8 am»), manda esa.
+    if (extraerDatos(textoCliente, pasoActual(flow)).hora) {
+      flow.horaPendiente = null;
+      guardar();
+      return null;
+    }
+    const resp = interpretarAmPm(textoCliente);
+    if (resp === 'am') {
+      flow.horaPendiente = null;
+      flow.datos.hora = `${base} am`;
+      return confirmarHoraYSiguiente();
+    }
+    if (resp === 'pm') {
+      const horaTexto = `${base} pm`;
+      const mins = horaAMinutos(horaTexto);
+      flow.horaPendiente = null;
+      if (mins !== null && mins > 17 * 60) {
+        // Después de las 5:00 pm la planta está cerrada: se
+        // ofrece la opción de las 7 am del día siguiente.
+        flow.esperaAceptacion7am = { original: horaTexto };
+        guardar();
+        return decision(textoPlantaCerrada7am(idioma));
+      }
+      flow.datos.hora = horaTexto;
+      return confirmarHoraYSiguiente();
+    }
+    if (esPreguntaPrecio(textoCliente) || detectarFAQ(textoCliente)) {
+      guardar();
+      return null;
+    }
+    guardar();
+    return decision(textoPreguntaAmPm(idioma));
+  }
+  return null;
+}
+
 function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const flow = conversacion.flow;
   if (!flow.idioma) flow.idioma = detectarIdioma(textoCliente);
   const idioma = flow.idioma;
   flow.turnos = (flow.turnos || 0) + 1;
   const pasoPedido = pasoActual(flow);
+
+  // ACLARACIÓN DE LA HORA en curso (¿am o pm? / oferta de las
+  // 7 am del día siguiente): la respuesta del cliente se
+  // interpreta ANTES de la captura normal — un «mañana» como
+  // respuesta a «¿am o pm?» es la mañana, jamás la fecha.
+  if (flow.horaPendiente || flow.esperaAceptacion7am) {
+    const rAclaracion = manejarAclaracionHora(conversacion, textoCliente, idioma, intentDetectado);
+    if (rAclaracion) return rAclaracion;
+  }
 
   // Mensajes que NO son un dato del paso actual: saludo puro
   // (retoma), pregunta frecuente, pregunta de cobertura por
@@ -2687,6 +2861,46 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       if (ixC >= 0) corregidos.splice(ixC, 1);
       const ixN = nuevos.indexOf('mix');
       if (ixN >= 0) nuevos.splice(ixN, 1);
+    }
+  }
+
+  // HORA AMBIGUA Y HORA CON LA PLANTA CERRADA (regla del
+  // dueño, 2026-10-31 17:27): cuando el cliente responde a la
+  // pregunta del día/hora (pasos 'fecha' u 'hora') con una hora
+  // 1-12 SIN decir am o pm («7», «a las 7»), NO se guarda a
+  // ciegas: se deja pendiente y el bot pregunta «¿Esa hora es
+  // am o pm?». Y si la hora recién anotada cae DESPUÉS de las
+  // 5:00 pm («8 pm», «7 de la noche»), la planta ya está
+  // cerrada: no se anota y se le ofrece al cliente tirarla a
+  // las 7 am del día siguiente. Solo en la etapa día/hora: un
+  // volcado de datos en otro paso (ej. «mañana a las 7:00 pm»
+  // junto con la dirección) se anota tal cual, como siempre.
+  let preguntaAmPm = false;
+  let oferta7am = false;
+  if (
+    !omitirCaptura && detectados.hora && flow.datos.hora === detectados.hora &&
+    (pasoPedido === 'hora' || pasoPedido === 'fecha')
+  ) {
+    const hTxt = String(detectados.hora).trim();
+    const quitarHoraDeListas = () => {
+      for (const lista of [nuevos, corregidos]) {
+        const ix = lista.indexOf('hora');
+        if (ix >= 0) lista.splice(ix, 1);
+      }
+    };
+    if (esHoraSueltaAmbigua(hTxt)) {
+      flow.datos.hora = null;
+      quitarHoraDeListas();
+      flow.horaPendiente = hTxt;
+      preguntaAmPm = true;
+    } else {
+      const mins = horaAMinutos(hTxt);
+      if (mins !== null && mins > 17 * 60) {
+        flow.datos.hora = null;
+        quitarHoraDeListas();
+        flow.esperaAceptacion7am = { original: hTxt };
+        oferta7am = true;
+      }
     }
   }
 
@@ -2781,7 +2995,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
 
   // ---- Anti-bucle: contar intentos fallidos en el MISMO paso ----
   const huboAvance =
-    nuevos.length > 0 || corregidos.length > 0 || preguntaAclararPago || paso !== pasoPedido;
+    nuevos.length > 0 || corregidos.length > 0 || preguntaAclararPago || preguntaAmPm || oferta7am || paso !== pasoPedido;
   const preguntaLegitima =
     saludoPuro || !!faq || !!ciudad || (noSabe && !detectados.medidas) ||
     esPreguntaPrecio(textoCliente) || !!preguntaSobreAire(textoCliente) || !!detectados.medidas ||
@@ -2838,7 +3052,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     partes.push(lineaMedidas(detectados.medidas, idioma));
   } else if (
     !esNuevo && !nuevos.length && !corregidos.length &&
-    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !detectados.mixInvalido && !escalado
+    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !detectados.mixInvalido && !escalado && !preguntaAmPm && !oferta7am
   ) {
     partes.push(prefijoContinuacion(flow, idioma));
   }
@@ -2889,11 +3103,15 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     partes.push(textoEscalado(paso, flow.datos, idioma));
   } else {
     partes.push(
-      preguntaAclararPago
-        ? idioma === 'en'
-          ? 'Debit or credit?'
-          : '¿Débito o crédito?'
-        : preguntaPara(paso, flow.datos, idioma, intentos >= 1)
+      oferta7am
+        ? textoPlantaCerrada7am(idioma)
+        : preguntaAmPm
+          ? textoPreguntaAmPm(idioma)
+          : preguntaAclararPago
+            ? idioma === 'en'
+              ? 'Debit or credit?'
+              : '¿Débito o crédito?'
+            : preguntaPara(paso, flow.datos, idioma, intentos >= 1)
     );
   }
 
