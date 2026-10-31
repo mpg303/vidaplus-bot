@@ -376,6 +376,43 @@ function mensajeReglaEfectivo(idioma) {
   return idioma === 'en' ? REGLA_EFECTIVO_EN : REGLA_EFECTIVO_ES;
 }
 
+// ============================================================
+// REGLAS DE PAGO POR MÉTODO (órdenes del dueño, 2026-10-31
+// 18:04-18:06): «Si es tarjeta de crédito se le suman cargos
+// por procesamientos» — Jesus fijó el recargo en 4% (tope que
+// publican las compañías de tarjetas). «Si es cheque se
+// colocan los taxes» — el concreto premezclado lleva tax en
+// Texas: 6.25% estatal + 2% local = 8.25% en Dallas (fuente:
+// Texas Comptroller). «Si es Zelle tiene que enviarlo antes de
+// cargar el concrete» — al Zelle de la compañía, el correo
+// Jmpconcreteanddispatchllc@gmail.com (el número de WhatsApp
+// NO recibe Zelle, como dicen las facturas de JMP).
+// ============================================================
+const PAGO_CHEQUE = 'Cheque';
+const RECARGO_CREDITO_PCT = 4;
+const TAXES_TX = '8.25%';
+const ZELLE_JMP = 'Jmpconcreteanddispatchllc@gmail.com';
+
+/** Nota corta del método de pago para el cliente (o null). */
+function notaMetodoPago(pago, idioma) {
+  if (pago === 'Tarjeta de crédito') {
+    return idioma === 'en'
+      ? `Credit card payments have a ${RECARGO_CREDITO_PCT}% processing surcharge added.`
+      : `A los pagos con tarjeta de crédito se les suma un cargo por procesamiento del ${RECARGO_CREDITO_PCT}%.`;
+  }
+  if (pago === PAGO_CHEQUE) {
+    return idioma === 'en'
+      ? `Check payments have taxes (${TAXES_TX}) added.`
+      : `A los pagos con cheque se les suman los taxes (${TAXES_TX}).`;
+  }
+  if (pago === 'Zelle') {
+    return idioma === 'en'
+      ? `The Zelle payment must be sent *before* we load the concrete, to: ${ZELLE_JMP} (this WhatsApp number does not receive Zelle).`
+      : `El pago por Zelle tiene que enviarlo *antes* de que carguemos el concreto, a: ${ZELLE_JMP} (este número de WhatsApp no recibe Zelle).`;
+  }
+  return null;
+}
+
 /** Construye la respuesta en español para cada intent. */
 function construirRespuesta(intentId, nombre, idioma = 'es') {
   if (idioma === 'en') return construirRespuestaEN(intentId, nombre);
@@ -1011,6 +1048,10 @@ function extraerPago(raw) {
   // un encargado — nunca como pago en el lugar del trabajo.
   if (esPagoEfectivo(raw)) return PAGO_EFECTIVO;
   if (/\bzelle\b/.test(t)) return 'Zelle';
+  // Cheque (orden del dueño, 2026-10-31): método aceptado; se
+  // le suman los taxes. \bcheck\b no casa «checking» (cuenta de
+  // cheques/débito), solo la palabra suelta.
+  if (/\b(cheque|check)\b/.test(t)) return PAGO_CHEQUE;
   const debito = /\b(debito|debit)\b/.test(t);
   const credito = /\b(credito|credit)\b/.test(t);
   if (debito && !credito) return 'Tarjeta de débito';
@@ -1885,7 +1926,7 @@ function extraerDatos(texto, paso) {
   } else if (
     pagoDetectado &&
     pagoDetectado !== 'Tarjeta' &&
-    /\b(pago|pagar|pay|zelle|debito|debit|credito|credit|efectivo|cash)\b/i.test(normalizar(raw))
+    /\b(pago|pagar|pay|zelle|debito|debit|credito|credit|efectivo|cash|cheque|check)\b/i.test(normalizar(raw))
   ) {
     d.pago = pagoDetectado;
     if (pagoDetectado === PAGO_EFECTIVO) d.pagoEfectivo = true;
@@ -1936,6 +1977,7 @@ function pagoDisplay(pago, idioma) {
   if (idioma !== 'en') return pago;
   if (pago === 'Tarjeta de débito') return 'Debit card';
   if (pago === 'Tarjeta de crédito') return 'Credit card';
+  if (pago === PAGO_CHEQUE) return 'Check';
   if (pago === PAGO_EFECTIVO) return 'Cash (in advance, with a company representative)';
   return pago;
 }
@@ -2389,7 +2431,7 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
       case 'compania':
         return "And what's the name of your company? If you don't have one and it's personal, just let me know and we'll leave it that way.";
       case 'pago':
-        return 'How will you pay: Zelle, debit card, credit card or cash?';
+        return 'How will you pay: Zelle, debit card, credit card, cash or check?';
       default:
         return '';
     }
@@ -2454,11 +2496,12 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
       return '¿Y cuál es el nombre de su compañía? Si no tiene compañía y es particular, dígamelo y así lo dejamos.';
     case 'pago':
       // Último dato: la forma de pago (sin pedir datos de cobro).
-      // Cuatro opciones (orden del dueño, 2026-10-21): Zelle,
-      // tarjeta de débito, tarjeta de crédito y efectivo — el
-      // efectivo con su regla de pago por adelantado con un
-      // encargado (nunca en el lugar del trabajo).
-      return '¿Cómo va a pagar: Zelle, tarjeta de débito, tarjeta de crédito o efectivo?';
+      // Opciones (orden del dueño, 2026-10-21): Zelle, tarjeta
+      // de débito, tarjeta de crédito y efectivo — el efectivo
+      // con su regla de pago por adelantado con un encargado
+      // (nunca en el lugar del trabajo). El CHEQUE se sumó el
+      // 2026-10-31 (se le suman los taxes).
+      return '¿Cómo va a pagar: Zelle, tarjeta de débito, tarjeta de crédito, efectivo o cheque?';
     default:
       return '';
   }
@@ -2588,7 +2631,9 @@ function resumenCliente(datos, nombre, idioma = 'es') {
       `\nWe'll confirm price and availability right away. ` +
       `A specialist will help you right here. 🙏\n` +
       // Same rule as in Spanish: payment is IN ADVANCE, said once.
-      `Payment is in advance: as soon as your payment is confirmed, we load your order. 🚛`
+      `Payment is in advance: as soon as your payment is confirmed, we load your order. 🚛` +
+      // Nota del método (crédito/cheque/Zelle), si aplica.
+      (notaMetodoPago(datos.pago, 'en') ? `\n${notaMetodoPago(datos.pago, 'en')}` : '')
     );
   }
   return (
@@ -2604,7 +2649,10 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     // Regla del dueño: el pago es POR ADELANTADO. Se avisa UNA
     // sola vez, aquí en el cierre (no en la pregunta del pago);
     // el bot todavía no pide ni envía datos de cobro.
-    `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛`
+    `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛` +
+    // Nota del método (crédito: recargo 4%; cheque: taxes
+    // 8.25%; Zelle: enviarlo antes de cargar, al correo de JMP).
+    (notaMetodoPago(datos.pago, 'es') ? `\n${notaMetodoPago(datos.pago, 'es')}` : '')
   );
 }
 
@@ -2971,6 +3019,23 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       const ixN = nuevos.indexOf('mix');
       if (ixN >= 0) nuevos.splice(ixN, 1);
     }
+  }
+
+  // INVARIANTE DE FECHA (misma red, 2026-10-31 18:03): la
+  // orden de una prueba de Jesus cerró con «Día: No pump» —
+  // un «No pump» guardado como día por una versión anterior
+  // del bot (antes del arreglo de la ronda 3) quedó en el
+  // estado guardado y se reanudó sin validación, igual que el
+  // mix 4300. Si la fecha guardada no parece una fecha
+  // (pareceFechaTexto), se anula aquí mismo y el paso del día
+  // vuelve a quedar abierto: una orden JAMÁS cierra con un
+  // «día» que no es un día.
+  if (flow.datos.fecha && !pareceFechaTexto(flow.datos.fecha)) {
+    flow.datos.fecha = null;
+    const ixCF = corregidos.indexOf('fecha');
+    if (ixCF >= 0) corregidos.splice(ixCF, 1);
+    const ixNF = nuevos.indexOf('fecha');
+    if (ixNF >= 0) nuevos.splice(ixNF, 1);
   }
 
   // HORA AMBIGUA Y HORA CON LA PLANTA CERRADA (regla del
@@ -3467,6 +3532,8 @@ function manejarDocsTarjeta(conversacion, clase) {
 // ============================================================
 const PREGUNTA_CAMBIO_MIX_ES = '¿Por cuál mix lo cambiamos en su orden?';
 const PREGUNTA_CAMBIO_MIX_EN = 'Which mix should we change it to on your order?';
+const PREGUNTA_OFERTA_PAGO_ES = '¿Quiere que le cambie la forma de pago a';
+const PREGUNTA_OFERTA_PAGO_EN = 'Want me to change your payment method to';
 const VENTANA_POST_CIERRE_MS = 7 * 24 * 3600 * 1000;
 
 function ultimaOrdenCerrada(conversacion) {
@@ -3510,6 +3577,95 @@ function aplicarCambioMixEnConfirmacion(textoArmada, nuevoMix) {
   return lineas.join('\n');
 }
 
+/** Reescribe la línea «Pago: …» de la confirmación armada. */
+function aplicarCambioPagoEnConfirmacion(textoArmada, nuevoPago) {
+  const lineas = String(textoArmada || '').split('\n');
+  const ix = lineas.findIndex((l) => /^Pago: /.test(l));
+  if (ix < 0) return null;
+  lineas[ix] = `Pago: ${nuevoPago}`;
+  return lineas.join('\n');
+}
+
+/** Etiqueta corta del método para preguntas/confirmaciones. */
+function etiquetaCortaPago(pago, idioma) {
+  if (idioma === 'en') {
+    if (pago === PAGO_EFECTIVO) return 'cash';
+    if (pago === 'Tarjeta de débito') return 'debit card';
+    if (pago === 'Tarjeta de crédito') return 'credit card';
+    if (pago === PAGO_CHEQUE) return 'check';
+    return pago;
+  }
+  if (pago === PAGO_EFECTIVO) return 'efectivo';
+  if (pago === PAGO_CHEQUE) return 'cheque';
+  return pago;
+}
+
+/** Respuesta cuando el cliente PREGUNTA por un método de pago. */
+function infoMetodoPago(pago, idioma) {
+  if (idioma === 'en') {
+    switch (pago) {
+      case 'Tarjeta de crédito':
+        return `Yes, we accept credit cards. A ${RECARGO_CREDITO_PCT}% processing surcharge is added, and we send you an authorization form to fill out.`;
+      case PAGO_CHEQUE:
+        return `Yes, we accept checks. Check payments have taxes (${TAXES_TX}) added.`;
+      case 'Zelle':
+        return `Yes, you can pay by Zelle. It must be sent before we load the concrete, to ${ZELLE_JMP} (this WhatsApp number does not receive Zelle).`;
+      case 'Tarjeta de débito':
+        return 'Yes, we accept debit cards, with no extra charges.';
+      case PAGO_EFECTIVO:
+        return 'Yes, we accept cash: payment is made in advance, by meeting one of our company representatives. We do not accept cash at the jobsite.';
+      default:
+        return '';
+    }
+  }
+  switch (pago) {
+    case 'Tarjeta de crédito':
+      return `Sí, aceptamos tarjeta de crédito. Se le suma un cargo por procesamiento del ${RECARGO_CREDITO_PCT}% y le enviamos una forma de autorización para llenarla.`;
+    case PAGO_CHEQUE:
+      return `Sí, aceptamos cheque. A los pagos con cheque se les suman los taxes (${TAXES_TX}).`;
+    case 'Zelle':
+      return `Sí, puede pagar por Zelle. Tiene que enviarlo antes de que carguemos el concreto, a ${ZELLE_JMP} (este número de WhatsApp no recibe Zelle).`;
+    case 'Tarjeta de débito':
+      return 'Sí, aceptamos tarjeta de débito, sin cargos extra.';
+    case PAGO_EFECTIVO:
+      return 'Sí, aceptamos efectivo: el pago se hace por adelantado, encontrándose con uno de los encargados de la compañía. No recibimos efectivo en el lugar del trabajo.';
+    default:
+      return '';
+  }
+}
+
+/** Lista de métodos aceptados, para la pregunta genérica. */
+function textoListaMetodos(idioma) {
+  return idioma === 'en'
+    ? `We accept: cash (in advance, with a company representative), debit card, credit card (a ${RECARGO_CREDITO_PCT}% processing surcharge applies), Zelle (sent before we load the concrete) and check (taxes of ${TAXES_TX} are added). Which one do you want to switch your order to?`
+    : `Las formas de pago que aceptamos son: efectivo (por adelantado, con un encargado), tarjeta de débito, tarjeta de crédito (se suma un cargo por procesamiento del ${RECARGO_CREDITO_PCT}%), Zelle (se envía antes de cargar el concreto) y cheque (se suman los taxes, ${TAXES_TX}). ¿A cuál quiere cambiar su orden?`;
+}
+
+/** Aplica el cambio de forma de pago a la orden ya cerrada. */
+function decisionCambioPago(orden, nuevoPago, idioma) {
+  const nuevaArmada = aplicarCambioPagoEnConfirmacion(orden.text, nuevoPago);
+  const nota =
+    nuevoPago === PAGO_EFECTIVO ? mensajeReglaEfectivo(idioma) : notaMetodoPago(nuevoPago, idioma);
+  const decision = {
+    responder: true,
+    texto:
+      (idioma === 'en'
+        ? `Done ✅ I changed your order's payment method to *${etiquetaCortaPago(nuevoPago, 'en')}*.`
+        : `Perfecto, ya cambié la forma de pago de su orden a *${etiquetaCortaPago(nuevoPago, 'es')}*. ✅`) +
+      (nota ? ` ${nota}` : ''),
+    intent: 'postcierre',
+    topic: 'el cambio de forma de pago de su orden',
+    sinPrefijoDespertar: true,
+  };
+  if (nuevaArmada && nuevaArmada !== orden.text) {
+    decision.confirmacionArmada = nuevaArmada;
+  }
+  // Crédito tras el cierre: el webhook envía la forma de
+  // autorización igual que cuando se elige en el flujo.
+  if (nuevoPago === 'Tarjeta de crédito') decision.formaTarjeta = true;
+  return decision;
+}
+
 function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
   const orden = ultimaOrdenCerrada(conversacion);
   if (!orden) return null;
@@ -3524,6 +3680,14 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
     !!ultimoBot &&
     (ultimoBot.text.includes(PREGUNTA_CAMBIO_MIX_ES) ||
       ultimoBot.text.includes(PREGUNTA_CAMBIO_MIX_EN));
+  const esperandoTarjetaPc =
+    !!ultimoBot &&
+    (ultimoBot.text.includes('¿Débito o crédito?') ||
+      ultimoBot.text.includes('Debit or credit?'));
+  const esperandoOfertaPago =
+    !!ultimoBot &&
+    (ultimoBot.text.includes(PREGUNTA_OFERTA_PAGO_ES) ||
+      ultimoBot.text.includes(PREGUNTA_OFERTA_PAGO_EN));
   // Idioma: el de la ORDEN cerrada (su resumen al cliente), no el
   // del mensajito post-cierre — «4300 is not a mix» o «just a
   // question» son demasiado cortos para detectarIdioma y la
@@ -3583,6 +3747,83 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
       decision.confirmacionArmada = nuevaArmada;
     }
     return decision;
+  }
+  // ---- Forma de pago tras el cierre (reglas del dueño,
+  // 2026-10-31 18:03-18:06): «ya cuando ya tienes casi todo, el
+  // cliente puede cambiar la forma de pago, es decir preguntar
+  // por las otras: Zelle, tarjetas». Antes todo caía en el
+  // «quedó anotado» genérico (captura real: «Y si es cheque?»
+  // sin respuesta). Ahora: si PREGUNTA por un método, se le
+  // responde con su regla (crédito +4% de procesamiento,
+  // cheque +taxes 8.25%, Zelle antes de cargar el concreto) y
+  // se le ofrece el cambio; si lo pide o lo confirma, se
+  // actualiza la línea «Pago:» de la orden armada.
+  {
+    const idiomaP = esperandoOfertaPago
+      ? ultimoBot.text.includes(PREGUNTA_OFERTA_PAGO_EN)
+        ? 'en'
+        : 'es'
+      : idioma;
+    const tNorm = ` ${normalizar(textoCliente)} `;
+    const pagoDetectadoPc = extraerPago(textoCliente);
+    const afirmativo = /\b(si|yes|ok|okay|dale|claro|va|bueno|cambialo|cambielo|hazlo)\b/.test(tNorm);
+    const decisionPagoSimple = (texto) => ({
+      responder: true,
+      texto,
+      intent: 'postcierre',
+      topic: 'el cambio de forma de pago de su orden',
+      sinPrefijoDespertar: true,
+    });
+    if (
+      esperandoTarjetaPc &&
+      (pagoDetectadoPc === 'Tarjeta de débito' || pagoDetectadoPc === 'Tarjeta de crédito')
+    ) {
+      return decisionCambioPago(orden, pagoDetectadoPc, idiomaP);
+    }
+    if (esperandoOfertaPago) {
+      const mOf = /\*([^*]+)\*/.exec(ultimoBot.text || '');
+      const ofrecido = mOf ? extraerPago(mOf[1]) : null;
+      if (ofrecido && (afirmativo || pagoDetectadoPc === ofrecido)) {
+        return decisionCambioPago(orden, ofrecido, idiomaP);
+      }
+      if (pagoDetectadoPc && pagoDetectadoPc !== 'Tarjeta') {
+        return decisionCambioPago(orden, pagoDetectadoPc, idiomaP);
+      }
+      if (pagoDetectadoPc === 'Tarjeta') {
+        return decisionPagoSimple(idiomaP === 'en' ? 'Debit or credit?' : '¿Débito o crédito?');
+      }
+      // Otra cosa: sigue el curso normal (genérico al final).
+    } else if (pagoDetectadoPc) {
+      const esPregunta =
+        /\?/.test(textoCliente) ||
+        /\b(acepta|aceptan|puedo|se puede|puedes|opcion|opciones|can i|do you|what|how)\b/.test(tNorm);
+      if (pagoDetectadoPc === 'Tarjeta') {
+        if (esPregunta) {
+          return decisionPagoSimple(
+            (idiomaP === 'en'
+              ? `We accept both. Debit has no extra charge; credit adds a ${RECARGO_CREDITO_PCT}% processing surcharge and we send you an authorization form to fill out. `
+              : `Aceptamos las dos. La de débito no tiene cargos extra; la de crédito suma un cargo por procesamiento del ${RECARGO_CREDITO_PCT}% y le enviamos una forma de autorización para llenarla. `) +
+              (idiomaP === 'en' ? 'Debit or credit?' : '¿Débito o crédito?')
+          );
+        }
+        return decisionPagoSimple(idiomaP === 'en' ? 'Debit or credit?' : '¿Débito o crédito?');
+      }
+      if (esPregunta) {
+        return decisionPagoSimple(
+          `${infoMetodoPago(pagoDetectadoPc, idiomaP)} ` +
+            (idiomaP === 'en'
+              ? `Want me to change your payment method to *${etiquetaCortaPago(pagoDetectadoPc, 'en')}*?`
+              : `¿Quiere que le cambie la forma de pago a *${etiquetaCortaPago(pagoDetectadoPc, 'es')}*?`)
+        );
+      }
+      // Cambio directo («mejor por Zelle», «pago con cheque»…).
+      return decisionCambioPago(orden, pagoDetectadoPc, idiomaP);
+    }
+    if (
+      /\b(formas? de pago|metodos? de pago|opciones de pago|payment methods|payment options|how (can|do) i pay|como (puedo |se )?paga)/.test(tNorm)
+    ) {
+      return decisionPagoSimple(textoListaMetodos(idiomaP));
+    }
   }
   if (esperandoCambio) {
     // Respondió a la pregunta de cambio sin un mix reconocible:
@@ -3854,8 +4095,12 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
   // intent fuerte, si la conversación tiene una orden recién
   // cerrada, el mensaje se atiende como corrección o nota de esa
   // orden (ver manejarPostCierre), nunca como «no le entendí» ni
-  // con la frase de retomada.
-  if (intent.id === 'otro') {
+  // con la frase de retomada. El intent «pago» también entra
+  // (2026-10-31 18:03): un «mejor por Zelle» tras el cierre es
+  // un CAMBIO de la orden, no la pregunta genérica de pagos;
+  // sin orden cerrada, manejarPostCierre devuelve null y sigue
+  // la respuesta normal del intent.
+  if (intent.id === 'otro' || intent.id === 'pago') {
     const postCierre = manejarPostCierre(conversacion, textoCliente, idiomaMsg);
     if (postCierre) return postCierre;
   }
