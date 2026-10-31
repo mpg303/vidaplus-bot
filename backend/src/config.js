@@ -19,7 +19,7 @@ try {
 const NEGOCIO = {
   nombre: 'JMP Concrete and Dispatch LLC',
   nombreCorto: 'JMP Concrete',
-  whatsapp: '(786) 366-2018',
+  whatsapp: '(469) 746-9639',
   email: 'jmpconcreteanddispatchllc@gmail.com',
   zona: 'Dallas–Fort Worth, TX y alrededores',
   zonaHoraria: 'America/Chicago',
