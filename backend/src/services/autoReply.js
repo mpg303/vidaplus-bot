@@ -1002,9 +1002,11 @@ function lineaMedidas(m, idioma) {
  * como siempre, al final de la respuesta.
  */
 function lineaPsiInvalido(numero, idioma) {
-  return idioma === 'en'
-    ? `There's no ${numero} psi mix: the only mixes are 3000, 3500, 3600, 4000, 4500 and 5000 psi, plus the 50-50 pump mix (for trailer pumps).`
-    : `El de ${numero} psi no existe: los únicos mixes son 3000, 3500, 3600, 4000, 4500 y 5000 psi, y el pompa mix 50-50 (para pompas de arrastre).`;
+  // Regla del dueño (2026-10-30 21:12): de los mixes que no
+  // existen NO se nombran ni se recita la lista; se dice que no
+  // están disponibles y que algo especial requiere solicitar un
+  // mix design o submittal. El número pedido no se repite.
+  return lineaMixInvalido(idioma);
 }
 
 /**
@@ -1016,8 +1018,8 @@ function lineaPsiInvalido(numero, idioma) {
  */
 function lineaMixInvalido(idioma) {
   return idioma === 'en'
-    ? 'We only work with these mixes: 3000, 3500, 3600, 4000, 4500 and 5000 psi, plus the 50-50 pump mix (for trailer pumps).'
-    : 'Solo trabajamos con estos mixes: 3000, 3500, 3600, 4000, 4500 y 5000 psi, y el pompa mix 50-50 (para pompas de arrastre).';
+    ? 'That mix is not available. If you need something special, you will need to request a mix design or submittal.'
+    : 'Ese mix no está disponible. Si necesitas algo especial, tienes que solicitar un mix design o submittal.';
 }
 
 /**
