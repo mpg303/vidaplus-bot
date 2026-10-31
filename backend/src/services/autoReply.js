@@ -2202,6 +2202,12 @@ function resumenCliente(datos, nombre, idioma = 'es') {
  * Devuelve la decisión de respuesta (mismo formato que decidirRespuesta),
  * con `confirmacionArmada` cuando el flujo se completa.
  */
+/** Lista oficial de mixes por PSI que existen (regla del dueño,
+ * 2026-10-30): la misma que valida extraerDatos en la captura;
+ * aquí a nivel de módulo para la guarda invariante de
+ * manejarFlujo. La POMPA MIX 50-50 va aparte (no es un psi). */
+const MIXES_PSI_VALIDOS = new Set([3000, 3500, 3600, 4000, 4500, 5000]);
+
 /** Prefijos de continuación: se rotan para no repetir el mismo en cada turno. */
 function prefijoContinuacion(flow, idioma) {
   const turno = flow.turnos || 0;
@@ -2280,6 +2286,31 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const { aplicados: nuevos, corregidos } = omitirCaptura
     ? { aplicados: [], corregidos: [] }
     : fusionarDatos(flow, detectados);
+
+  // INVARIANTE DE MIXES (red de seguridad permanente, 2026-10-31):
+  // ningún psi fuera de la lista oficial {3000, 3500, 3600, 4000,
+  // 4500, 5000} puede quedar guardado como mix — ni por una ruta
+  // de captura presente o futura, ni por ESTADO VIEJO guardado de
+  // versiones anteriores del bot (caso real: un flujo guardado con
+  // «4300 psi» por una versión sin validación se reanudó días
+  // después y la orden cerró con ese mix). Si un psi inválido
+  // aparece en flow.datos.mix, se anula aquí mismo, el turno se
+  // trata como psi inválido (la respuesta lleva la redacción
+  // oficial de mix no disponible) y el paso del mix queda abierto:
+  // una orden JAMÁS cierra con un mix que no existe. La POMPA MIX
+  // 50-50 y los productos sin psi no coinciden con el patrón
+  // «número + psi» y no se tocan.
+  {
+    const mGuard = /^(\d{3,5})\s*psi$/i.exec(String(flow.datos.mix || '').trim());
+    if (mGuard && !MIXES_PSI_VALIDOS.has(parseInt(mGuard[1], 10))) {
+      flow.datos.mix = null;
+      if (!detectados.psiInvalido) detectados.psiInvalido = mGuard[1];
+      const ixC = corregidos.indexOf('mix');
+      if (ixC >= 0) corregidos.splice(ixC, 1);
+      const ixN = nuevos.indexOf('mix');
+      if (ixN >= 0) nuevos.splice(ixN, 1);
+    }
+  }
 
   // Regla del efectivo registrada en ESTE turno: el aviso va en
   // la respuesta de este turno — y también en el cierre si el
@@ -2689,6 +2720,173 @@ function manejarDocsTarjeta(conversacion, clase) {
   };
 }
 
+// ============================================================
+// POST-CIERRE DE ORDEN (2026-10-31): mensajes del cliente DESPUÉS
+// de que su orden ya cerró. Caso real: la orden acababa de cerrar
+// y el cliente escribió «4300 no es un mix»; el bot cayó en el
+// fallback genérico («no le entendí») con la frase de retomada en
+// tú — no atendió la corrección (que además era correcta) y mezcló
+// registros. Reglas:
+//  - Si el cliente corrige o menciona un mix tras el cierre, se
+//    atiende como CORRECCIÓN de su orden: mix no disponible →
+//    redacción oficial + se pregunta por cuál mix válido lo
+//    cambia (y su respuesta se aplica); mix válido → se actualiza
+//    la confirmación armada del panel y se confirma en una línea.
+//  - Otro mensaje post-cierre sin intent claro NO cae en «no le
+//    entendí»: se confirma que quedó anotado para el especialista
+//    que atiende la orden.
+//  - Nada de esto lleva la frase de retomada («El especialista no
+//    le contestó…»): tras el cierre el especialista SÍ está
+//    atendiendo la orden. La decisión sale con
+//    sinPrefijoDespertar y el envoltorio la respeta.
+// La orden cerrada se localiza en el historial: el último mensaje
+// BOT con flags.tipo = 'confirmacion_armada' (el que el webhook
+// guarda al cerrar el flujo), dentro de los últimos 7 días.
+// ============================================================
+const PREGUNTA_CAMBIO_MIX_ES = '¿Por cuál mix lo cambiamos en su orden?';
+const PREGUNTA_CAMBIO_MIX_EN = 'Which mix should we change it to on your order?';
+const VENTANA_POST_CIERRE_MS = 7 * 24 * 3600 * 1000;
+
+function ultimaOrdenCerrada(conversacion) {
+  let msgs = [];
+  try {
+    msgs = db.getMessages(conversacion.id, 200) || [];
+  } catch {
+    return null;
+  }
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.sender === 'BOT' && m.flags && m.flags.tipo === 'confirmacion_armada') {
+      if (
+        m.timestamp &&
+        Date.now() - new Date(m.timestamp).getTime() > VENTANA_POST_CIERRE_MS
+      ) {
+        return null;
+      }
+      return m;
+    }
+  }
+  return null;
+}
+
+/** Reescribe el mix en la línea 3 de la confirmación armada,
+ * conservando el aire y la pompa tal como quedaron en la orden. */
+function aplicarCambioMixEnConfirmacion(textoArmada, nuevoMix) {
+  const lineas = String(textoArmada || '').split('\n');
+  if (lineas.length < 3) return null;
+  let linea = lineas[2];
+  let pompa = null;
+  const mPompa = /\s\(([^)]+)\)\s*$/.exec(linea);
+  if (mPompa) {
+    pompa = mPompa[1];
+    linea = linea.slice(0, mPompa.index);
+  }
+  let aire = null;
+  const mAire = /\s(con aire|no aire)\s*$/.exec(linea);
+  if (mAire) aire = mAire[1];
+  lineas[2] = `${nuevoMix}${aire ? ` ${aire}` : ''}${pompa ? ` (${pompa})` : ''}`;
+  return lineas.join('\n');
+}
+
+function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
+  const orden = ultimaOrdenCerrada(conversacion);
+  if (!orden) return null;
+  // Saludo puro tras el cierre: lo atiende la ruta de saludo.
+  if (esSaludoPuro(textoCliente)) return null;
+  let msgs = [];
+  try {
+    msgs = db.getMessages(conversacion.id, 200) || [];
+  } catch {}
+  const ultimoBot = [...msgs].reverse().find((m) => m.sender === 'BOT');
+  const esperandoCambio =
+    !!ultimoBot &&
+    (ultimoBot.text.includes(PREGUNTA_CAMBIO_MIX_ES) ||
+      ultimoBot.text.includes(PREGUNTA_CAMBIO_MIX_EN));
+  // Idioma: el de la ORDEN cerrada (su resumen al cliente), no el
+  // del mensajito post-cierre — «4300 is not a mix» o «just a
+  // question» son demasiado cortos para detectarIdioma y la
+  // corrección debe salir en el idioma de la conversación.
+  const resumenCierre = [...msgs]
+    .reverse()
+    .find(
+      (m) =>
+        m.sender === 'BOT' &&
+        (m.text.includes('Ya quedó registrada su orden') ||
+          m.text.includes('Your order is registered'))
+    );
+  const idiomaOrden = resumenCierre
+    ? resumenCierre.text.includes('Your order is registered')
+      ? 'en'
+      : 'es'
+    : null;
+  const idioma = esperandoCambio
+    ? ultimoBot.text.includes(PREGUNTA_CAMBIO_MIX_EN)
+      ? 'en'
+      : 'es'
+    : idiomaOrden || idiomaMsg;
+  const d = extraerDatos(textoCliente, 'mix');
+
+  if (d.psiInvalido || d.mixInvalido) {
+    // Corrección a un mix que NO existe: redacción oficial (sin
+    // nombrar el mix pedido ni listar los válidos) y se pregunta
+    // por cuál mix válido lo cambia en su orden.
+    return {
+      responder: true,
+      texto:
+        lineaMixInvalido(idioma) +
+        ' ' +
+        (idioma === 'en' ? PREGUNTA_CAMBIO_MIX_EN : PREGUNTA_CAMBIO_MIX_ES),
+      intent: 'postcierre',
+      topic: 'la corrección del mix de su orden',
+      sinPrefijoDespertar: true,
+    };
+  }
+  if (d.mix) {
+    // Corrección a un mix válido (directa, o la respuesta a la
+    // pregunta de cambio): se actualiza la confirmación armada
+    // que el especialista completa en el panel y se confirma el
+    // cambio en una línea.
+    const nuevaArmada = aplicarCambioMixEnConfirmacion(orden.text, d.mix);
+    const decision = {
+      responder: true,
+      texto:
+        idioma === 'en'
+          ? `Done ✅ I updated the mix on your order to *${d.mix}*.`
+          : `Perfecto, ya corregí el mix de su orden: queda en *${d.mix}*. ✅`,
+      intent: 'postcierre',
+      topic: 'la corrección del mix de su orden',
+      sinPrefijoDespertar: true,
+    };
+    if (nuevaArmada && nuevaArmada !== orden.text) {
+      decision.confirmacionArmada = nuevaArmada;
+    }
+    return decision;
+  }
+  if (esperandoCambio) {
+    // Respondió a la pregunta de cambio sin un mix reconocible:
+    // se repite la pregunta, jamás «no le entendí».
+    return {
+      responder: true,
+      texto: idioma === 'en' ? PREGUNTA_CAMBIO_MIX_EN : PREGUNTA_CAMBIO_MIX_ES,
+      intent: 'postcierre',
+      topic: 'la corrección del mix de su orden',
+      sinPrefijoDespertar: true,
+    };
+  }
+  // Mensaje genérico tras el cierre: queda anotado para el
+  // especialista que atiende la orden (no «no le entendí»).
+  return {
+    responder: true,
+    texto:
+      idioma === 'en'
+        ? 'Got it — your message has been noted for the specialist handling your order. If you need to change anything about your order, just tell me here. 🙏'
+        : 'Perfecto, su mensaje quedó anotado para el especialista que está atendiendo su orden. Si necesita cambiar algo de su orden, dígamelo por aquí. 🙏',
+    intent: 'postcierre',
+    topic: 'un mensaje tras el cierre de su orden',
+    sinPrefijoDespertar: true,
+  };
+}
+
 /**
  * Saludo breve de CONTINUACIÓN cuando el bot despierta de
  * needsHuman y el cliente solo saludó: nada de bienvenida
@@ -2900,6 +3098,16 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
     };
   }
 
+  // --- Post-cierre de orden (2026-10-31): sin flujo activo y sin
+  // intent fuerte, si la conversación tiene una orden recién
+  // cerrada, el mensaje se atiende como corrección o nota de esa
+  // orden (ver manejarPostCierre), nunca como «no le entendí» ni
+  // con la frase de retomada.
+  if (intent.id === 'otro') {
+    const postCierre = manejarPostCierre(conversacion, textoCliente, idiomaMsg);
+    if (postCierre) return postCierre;
+  }
+
   // --- Retoma tras despertar de needsHuman con un saludo puro y
   // sin flujo en curso: saludo breve de continuación, sin la
   // bienvenida completa y sin repetir la orden anterior.
@@ -2937,13 +3145,18 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
 }
 
 // ============================================================
-// FRASE DE RETOMADA AL DESPERTAR (palabras exactas del dueño,
-// 2026-10-21): cuando el bot retoma una conversación porque el
-// especialista NO contestó, su primer mensaje al cliente abre
-// con esta frase y de ahí sigue ayudándole con lo que pida.
+// FRASE DE RETOMADA AL DESPERTAR (orden del dueño, 2026-10-21;
+// registro corregido a USTED el 2026-10-31: el bot trata al
+// cliente de usted en todo el flujo —«Disculpe», «su orden»— y
+// la versión original mezclaba tú y usted): cuando el bot retoma
+// una conversación marcada needsHuman porque el especialista NO
+// contestó, su primer mensaje al cliente abre con esta frase y
+// de ahí sigue ayudándole con lo que pida. SOLO sale en ese
+// contexto real (ctx.desperto); las respuestas post-cierre de
+// una orden salen con sinPrefijoDespertar y nunca la llevan.
 // ============================================================
 const LINEA_DESPERTAR_ES =
-  'El especialista no te contestó, no te preocupes, yo estoy aquí para ayudarte.';
+  'El especialista no le contestó; no se preocupe, yo estoy aquí para ayudarle.';
 const LINEA_DESPERTAR_EN =
   "The specialist didn't get back to you, don't worry, I'm here to help you.";
 
@@ -2956,7 +3169,11 @@ const LINEA_DESPERTAR_EN =
 function decidirRespuesta(conversacion, textoCliente, tipoMensaje = 'text') {
   const ctx = { desperto: false, idioma: null };
   const d = decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje, ctx);
-  if (d.responder && ctx.desperto) {
+  // Las respuestas post-cierre de una orden (sinPrefijoDespertar)
+  // NUNCA llevan la frase de retomada: tras el cierre el
+  // especialista sí está atendiendo la orden y la frase no viene
+  // al caso (caso real 2026-10-31).
+  if (d.responder && ctx.desperto && !d.sinPrefijoDespertar) {
     const idioma = ctx.idioma || detectarIdioma(textoCliente);
     d.texto = `${idioma === 'en' ? LINEA_DESPERTAR_EN : LINEA_DESPERTAR_ES}\n${d.texto}`;
   }
