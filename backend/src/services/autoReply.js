@@ -648,6 +648,49 @@ function pareceDireccion(raw) {
 }
 
 /**
+ * ¿El mensaje ES una dirección suelta, aunque la calle no traiga
+ * sufijo reconocido ni ZIP ni etiqueta? («4215 N Beltwood Dallas
+ * Tx»: número de casa + solo palabras de calle/ciudad/estado y un
+ * ZIP opcional al final, sin NINGÚN otro dato del flujo).
+ * Falla real del 2026-10-31 16:21 (captura de Jesus, minutos
+ * después del despliegue 2f18d5cd): con el flujo en la pregunta
+ * del aire — que vive dentro del paso 'mix' — el número de casa
+ * 4215 caía en la red del PSI inválido (\b\d{4}\b del paso del
+ * mix) porque pareceDireccion no reconoce «Beltwood», y el bot
+ * soltaba «Ese mix no está disponible» ante una dirección; la
+ * dirección además se perdía (no se capturaba). REGLA: un número
+ * que forma parte de una dirección NUNCA se evalúa como mix.
+ * Conservadora a propósito: mensaje de UNA línea que empieza con
+ * el número de casa y sigue SOLO con palabras (u ordinales tipo
+ * «42nd»); cualquier palabra de dato del flujo (yardas, psi,
+ * slump, aire, pompa, precio, días…) la descalifica, y un número
+ * pelado sin palabras («4215» solo) NO es dirección: en el paso
+ * del mix sigue tratándose como intento de mix, como hoy.
+ */
+function pareceDireccionSuelta(raw) {
+  if (/\n/.test(raw)) return false; // multilínea: la cubre la línea etiquetada «Dirección»
+  const t = raw.trim().replace(/[. ]+$/, '');
+  const m = t.match(/^(\d{1,5})\s+(.+)$/);
+  if (!m) return false;
+  const resto = m[2].trim().replace(/\s+\d{5}(-\d{4})?$/, ''); // ZIP final opcional
+  const tokens = resto.split(/\s+/);
+  if (tokens.length < 1 || tokens.length > 6) return false;
+  const NO_CALLE = new Set([
+    'de', 'del', 'y', 'con', 'sin', 'para', 'por', 'el', 'la', 'los', 'las', 'un', 'una',
+    'yardas', 'yarda', 'yds', 'yd', 'psi', 'libras', 'libra', 'slump', 'aire', 'pompa',
+    'bomba', 'pump', 'mix', 'mezcla', 'concreto', 'precio', 'dolares', 'dollars',
+    'pesos', 'hoy', 'manana', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes',
+    'sabado', 'domingo', 'am', 'pm', 'hora', 'horas', 'dia', 'dias', 'quiero',
+    'ocupo', 'necesito', 'the', 'of', 'at', 'in', 'on', 'for', 'and', 'or',
+  ]);
+  return tokens.every(
+    (tok) =>
+      /^\d+(st|nd|rd|th)$/i.test(tok) ||
+      (/^[A-Za-zÁÉÍÓÚÑáéíóúñ.'-]+$/.test(tok) && !NO_CALLE.has(normalizar(tok)))
+  );
+}
+
+/**
  * Detecta si el cliente dijo que el concreto va con aire o sin aire.
  * Devuelve 'con aire', 'no aire' o null. Las formas negativas mandan
  * («sin aire», «no aire», «no lleva aire», «non air», «no air»…).
@@ -1369,7 +1412,12 @@ function extraerDatos(texto, paso) {
     if (/\d/.test(cand) && cand.length >= 6) direccionMarcada = cand;
   }
 
-  const esDireccion = pareceDireccion(raw) || !!direccionMarcada;
+  // Dirección suelta sin sufijo ni etiqueta («4215 N Beltwood
+  // Dallas Tx»): también ES dirección a todos los efectos — su
+  // número de casa jamás se evalúa como mix (falla del 2026-10-31
+  // 16:21) y la dirección se captura (ver la sección Dirección).
+  const dirSuelta = pareceDireccionSuelta(raw);
+  const esDireccion = pareceDireccion(raw) || !!direccionMarcada || dirSuelta;
 
   // --- Aire (va junto con el mix: «aire o no aire») ---
   // Si el mensaje PREGUNTA sobre el aire («¿qué es el aire?»), la
@@ -1546,7 +1594,10 @@ function extraerDatos(texto, paso) {
     // manda sobre la heurística de sufijos de calle.
     d.direccion = direccionMarcada;
   } else if (esDireccion) {
-    const dir = capturarDireccion(raw);
+    // capturarDireccion exige sufijo de calle: si el mensaje ES
+    // una dirección suelta sin sufijo («4215 N Beltwood…»), el
+    // mensaje completo ES la dirección y se toma tal cual.
+    const dir = capturarDireccion(raw) || (dirSuelta ? raw.trim().replace(/[. ]+$/, '') : null);
     if (dir) d.direccion = dir;
   } else if (
     paso === 'direccion' &&
