@@ -2905,8 +2905,9 @@ function bloqueTotalCredito(datos, idioma = 'es') {
  *   Pago: {forma de pago que eligió el cliente}
  * La línea de la planta se OMITE siempre (regla del dueño: el cliente
  * directo no debe saber de dónde carga el concreto) y la línea
- * «Order number» va sin número: Jesus lo completa a mano al apartar
- * en la planta, antes de enviarle esta confirmación al cliente.
+ * «Order number» lleva el número de orden NUESTRO que el bot emite
+ * al completarse la orden (orden del dueño, 2026-11-01; antes esa
+ * línea iba en blanco y Jesus la llenaba a mano).
  * El bot NO la envía solo: la deja guardada en la conversación.
  */
 function armarConfirmacion(datos, conversacion) {
@@ -2925,7 +2926,7 @@ function armarConfirmacion(datos, conversacion) {
     `${datos.direccion}`,
     `${datos.hora} jobsite`,
     `Slump${datos.slump ? ` ${datos.slump}` : ''}${datos.inspeccion ? ' (inspection)' : ''}`,
-    'Order number',
+    datos.numeroOrden ? `Order number: ${datos.numeroOrden}` : 'Order number',
   ];
   // Al final va la forma de pago que eligió el cliente (línea
   // nueva; las líneas del formato del dueño no cambian).
@@ -2987,6 +2988,7 @@ function resumenCliente(datos, nombre, idioma = 'es') {
   if (idioma === 'en') {
     return (
       `All set${n}! ✅ Your order is registered:\n` +
+      (datos.numeroOrden ? `• Order number: ${datos.numeroOrden}\n` : '') +
       `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
       `• Mix: ${mixVisible(datos, 'en')}${datos.aire ? `, ${aireDisplay(datos.aire, idioma)}` : ''}\n` +
       (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente' ? `• Pump: ${datos.pompa}\n` : '') +
@@ -3008,6 +3010,7 @@ function resumenCliente(datos, nombre, idioma = 'es') {
   }
   return (
     `¡Listo${n}! ✅ Ya quedó registrada su orden:\n` +
+    (datos.numeroOrden ? `• Número de orden: ${datos.numeroOrden}\n` : '') +
     `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
     `• Mix: ${mixVisible(datos, 'es')}${datos.aire ? `, ${datos.aire}` : ''}\n` +
     (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente' ? `• Pompa: ${datos.pompa}\n` : '') +
@@ -3045,6 +3048,7 @@ function textoCierreTrasOrden(datos, nombre, idioma = 'es') {
   if (idioma === 'en') {
     return (
       `All set${n}! ✅ Your order is registered with payment by *${pagoDisplay(datos.pago, 'en')}*.` +
+      (datos.numeroOrden ? `\nYour order number is *${datos.numeroOrden}*.` : '') +
       (notaMetodoPago(datos.pago, 'en') ? `\n${notaMetodoPago(datos.pago, 'en')}` : '') +
       (bloqueTotalCredito(datos, 'en') ? `\n${bloqueTotalCredito(datos, 'en')}` : '') +
       (esPagoEfectivo(datos.pago)
@@ -3055,6 +3059,7 @@ function textoCierreTrasOrden(datos, nombre, idioma = 'es') {
   }
   return (
     `¡Listo${n}! ✅ Ya quedó registrada su orden con pago en *${datos.pago}*.` +
+    (datos.numeroOrden ? `\nSu número de orden es el *${datos.numeroOrden}*.` : '') +
     (notaMetodoPago(datos.pago, 'es') ? `\n${notaMetodoPago(datos.pago, 'es')}` : '') +
     (bloqueTotalCredito(datos, 'es') ? `\n${bloqueTotalCredito(datos, 'es')}` : '') +
     (esPagoEfectivo(datos.pago)
@@ -3703,6 +3708,18 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   if (!paso) {
     // Flujo completo: cierre al cliente + confirmación armada.
     const datos = flow.datos;
+    // NÚMERO DE ORDEN NUESTRO (orden del dueño, 2026-11-01):
+    // cuando la orden ya está lista — no falta ningún paso —
+    // el bot emite el número de orden de JMP, correlativo y
+    // persistente (contador en db): va en la confirmación
+    // armada («Order number: N») y se le dice al cliente en el
+    // cierre. Se emite UNA vez por orden: si este punto se
+    // alcanzara de nuevo con la misma orden, se conserva.
+    if (!datos.numeroOrden) {
+      try {
+        datos.numeroOrden = db.siguienteNumeroOrden();
+      } catch {}
+    }
     const confirmacionArmada = armarConfirmacion(datos, conversacion);
     // Ronda 11: si la orden ya se le mostró al cliente al
     // llegar al paso del pago (la orden va primero), el cierre

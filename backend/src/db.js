@@ -40,6 +40,7 @@ function vacia() {
     campaigns: [],     // { id, name, templateName, language, status, createdAt, recipients: [{phone,name,status,error,sentAt}] }
     sessions: [],      // { token, createdAt, expiresAt }
     replies: {},       // respuestas editadas desde el panel: { intentId: { text?, keywords?, updatedAt } }
+    contadorOrdenes: 0, // correlativo del número de orden NUESTRO que el bot emite al completarse cada orden (orden del dueño, 2026-11-01)
   };
 }
 
@@ -362,6 +363,20 @@ function setDocsTarjeta(id, docs) {
   return c;
 }
 
+/**
+ * Emite el siguiente número de orden NUESTRO (correlativo
+ * persistente): lo llama el bot cuando una orden queda completa
+ * (orden del dueño, 2026-11-01). El contador vive en el estado
+ * completo, así que sobrevive a los reinicios de Render porque
+ * el estado se respalda en Supabase como todo lo demás.
+ */
+function siguienteNumeroOrden() {
+  const d = load();
+  d.contadorOrdenes = (d.contadorOrdenes || 0) + 1;
+  save();
+  return d.contadorOrdenes;
+}
+
 function updateMessageStatus(metaId, status, errors) {
   const db = load();
   const m = db.messages.find((x) => x.metaId === metaId);
@@ -558,6 +573,7 @@ module.exports = {
   setNeedsHuman,
   setConversationFlow,
   setDocsTarjeta,
+  siguienteNumeroOrden,
   updateMessageStatus,
   scheduleFollowup,
   cancelFollowups,
