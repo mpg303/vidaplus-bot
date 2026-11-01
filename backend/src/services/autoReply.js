@@ -4260,6 +4260,12 @@ function manejarDocsTarjeta(conversacion, clase) {
 // ============================================================
 const PREGUNTA_CAMBIO_MIX_ES = '¿Por cuál mix lo cambiamos en su orden?';
 const PREGUNTA_CAMBIO_MIX_EN = 'Which mix should we change it to on your order?';
+// RONDA 25: fragmentos de la pregunta «¿con cuál mix va a
+// empezar?» que se le hace al cliente cuando su orden cerrada
+// lleva 2 cotizaciones (ver decisionReferenciaOrden): sirven
+// para reconocer que el bot está ESPERANDO esa elección.
+const PREGUNTA_INICIO_MIX_ES = '¿con cuál mix va a empezar:';
+const PREGUNTA_INICIO_MIX_EN = 'mix will you start with:';
 const PREGUNTA_OFERTA_PAGO_ES = '¿Quiere que le cambie la forma de pago a';
 const PREGUNTA_OFERTA_PAGO_EN = 'Want me to change your payment method to';
 const VENTANA_POST_CIERRE_MS = 7 * 24 * 3600 * 1000;
@@ -4472,21 +4478,165 @@ function detectarReferenciaOrden(texto) {
   return { numero: parseInt(m[1], 10), resto, restoUtil };
 }
 
+// ============================================================
+// RONDA 25 (2026-11-01; corrección de Jesus al probar en vivo
+// su orden #1 con 2 cotizaciones: «Se tiene que comenzar con
+// una order de la 3000 o la de 3500. Tienes que decirle al
+// customer con cuál va a empezar»): si la orden cerrada lleva
+// 2 COTIZACIONES, no se puede comenzar sin que el cliente
+// elija UNA. Al referirla, el bot le pregunta directamente CON
+// CUÁL MIX VA A EMPEZAR (nombrando ambos); cuando el cliente
+// elige uno, ese mix queda como EL mix de la orden, el par se
+// descarta (misma regla de la ronda 10), el número de orden se
+// conserva y el total de la orden armada queda con el total
+// que ya correspondía a ese mix (taxes incluidos; si pagó con
+// crédito, también su total con el +4% recalculado).
+// ============================================================
+
+/** El número de orden NUESTRO guardado en la confirmación armada. */
+function numeroOrdenDeArmada(textoArmada) {
+  const mN = /Order number:\s*(\d+)/.exec(textoArmada || '');
+  return mN ? parseInt(mN[1], 10) : null;
+}
+
+/**
+ * Los mixes de las cotizaciones de una orden CERRADA, leídos
+ * de la línea del mix de su confirmación armada («3000 psi y
+ * 3500 psi (2 cotizaciones) no aire (Sin pompa)»). Devuelve
+ * ['3000 psi', '3500 psi'] o null si la orden lleva un solo mix.
+ */
+function mixesCotizacionDeOrden(orden) {
+  const lineas = String((orden && orden.text) || '').split('\n');
+  const lineaMix = lineas[2] || '';
+  const m = /^(.+?)\s*\((\d+) (?:cotizaciones|quotes)\)/.exec(lineaMix);
+  if (!m) return null;
+  const mixes = [...m[1].matchAll(/(\d{3,5}) psi/g)].map((x) => `${x[1]} psi`);
+  return mixes.length >= 2 ? mixes : null;
+}
+
+/** La pregunta de la ronda 25, nombrando los mixes del par. */
+function preguntaInicioMix(mixes, idioma) {
+  const en = idioma === 'en';
+  const marcados = mixes.map((m) => `*${m}*`);
+  const lista = en
+    ? marcados.length === 2
+      ? `${marcados[0]} or ${marcados[1]}`
+      : `${marcados.slice(0, -1).join(', ')} or ${marcados[marcados.length - 1]}`
+    : marcados.length === 2
+      ? `el de ${marcados[0]} o el de ${marcados[1]}`
+      : `${marcados.slice(0, -1).map((m) => `el de ${m}`).join(', ')} o el de ${marcados[marcados.length - 1]}`;
+  return en
+    ? `Which mix will you start with: ${lista}?`
+    : `¿con cuál mix va a empezar: ${lista}?`;
+}
+
+/** Se repite la pregunta de inicio cuando el cliente no eligió un mix del par. */
+function decisionPreguntaInicioMix(orden, idioma) {
+  const mixes = mixesCotizacionDeOrden(orden);
+  const numero = numeroOrdenDeArmada(orden.text);
+  const pregunta = preguntaInicioMix(mixes, idioma);
+  return {
+    responder: true,
+    texto:
+      idioma === 'en'
+        ? `To start your order${numero !== null ? ` *#${numero}*` : ''}, I need you to pick one of its ${mixes.length} quotes: ${pregunta}`
+        : `Para empezar su orden${numero !== null ? ` *#${numero}*` : ''}, necesito que elija una de sus ${mixes.length} cotizaciones: ${pregunta.charAt(0).toUpperCase() + pregunta.slice(1)}`,
+    intent: 'postcierre',
+    topic: 'la elección del mix para empezar su orden',
+    sinPrefijoDespertar: true,
+  };
+}
+
+/**
+ * Aplica la elección del mix inicial a la confirmación armada:
+ * la línea del mix queda con ese mix solo (el par se descarta,
+ * conservando aire y pompa), y los totales quedan con el total
+ * que la orden YA traía para ese mix — su «Total <mix>:» pasa
+ * a «Total:» y, si pagó con crédito, su total con el recargo
+ * queda como el «Total con tarjeta de crédito» único (los
+ * totales ya traen los taxes del 8.25% incluidos y el +4% de
+ * crédito sumado desde el cierre). Sin totales en la orden
+ * (fuera de Dallas, pompa sin precio…) la orden queda sin
+ * total, como siempre: jamás se inventa uno.
+ */
+function aplicarInicioMixEnConfirmacion(textoArmada, mixElegido) {
+  const esc = mixElegido.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const mTotal = new RegExp(`^Total ${esc}: \\$([\\d,]+\\.\\d{2})$`, 'm').exec(textoArmada || '');
+  const mCred = new RegExp(
+    `^Total con tarjeta de crédito \\(\\+${RECARGO_CREDITO_PCT}%\\) ${esc}: \\$([\\d,]+\\.\\d{2})$`,
+    'm'
+  ).exec(textoArmada || '');
+  const base = aplicarCambioMixEnConfirmacion(textoArmada, mixElegido);
+  if (!base) return { nuevaArmada: null, total: null, totalCredito: null };
+  if (!mTotal) return { nuevaArmada: base, total: null, totalCredito: null };
+  const lineas = base.split('\n');
+  const nuevas = [`Total: $${mTotal[1]}`];
+  if (mCred) {
+    nuevas.push(`Total con tarjeta de crédito (+${RECARGO_CREDITO_PCT}%): $${mCred[1]}`);
+  }
+  const ix = lineas.findIndex((l) => /^⚠/.test(l) || /^Nota: /.test(l));
+  if (ix < 0) lineas.push(...nuevas);
+  else lineas.splice(ix, 0, ...nuevas);
+  return {
+    nuevaArmada: lineas.join('\n'),
+    total: mTotal[1],
+    totalCredito: mCred ? mCred[1] : null,
+  };
+}
+
+/** Confirmación al cliente de que su orden empieza con el mix elegido (ronda 25). */
+function decisionInicioMix(orden, mixElegido, idioma) {
+  const en = idioma === 'en';
+  const numero = numeroOrdenDeArmada(orden.text);
+  const { nuevaArmada, total, totalCredito } = aplicarInicioMixEnConfirmacion(orden.text, mixElegido);
+  let texto = en
+    ? `Perfect, we'll start with the *${mixElegido}* mix. Your order${numero !== null ? ` *#${numero}*` : ''} now has that mix.`
+    : `Perfecto, empezamos con el mix de *${mixElegido}*. Su orden${numero !== null ? ` *#${numero}*` : ''} queda con ese mix.`;
+  if (totalCredito) {
+    texto += en
+      ? ` Total with credit card: *$${totalCredito}*.`
+      : ` Total con tarjeta de crédito: *$${totalCredito}*.`;
+  } else if (total) {
+    texto += en ? ` The total is *$${total}*.` : ` El total queda en *$${total}*.`;
+  }
+  const decision = {
+    responder: true,
+    texto,
+    intent: 'postcierre',
+    topic: 'la elección del mix para empezar su orden',
+    sinPrefijoDespertar: true,
+  };
+  if (nuevaArmada && nuevaArmada !== orden.text) {
+    decision.confirmacionArmada = nuevaArmada;
+  }
+  return decision;
+}
+
 /** Respuesta a la referencia pura de una orden (ronda 24). */
 function decisionReferenciaOrden(orden, numero, idioma) {
   const en = idioma === 'en';
-  let numeroOrden = null;
-  if (orden) {
-    // El flow ya se limpió al cerrar: el número de la orden
-    // cerrada vive en su confirmación armada («Order number: N»).
-    const mN = /Order number:\s*(\d+)/.exec(orden.text || '');
-    if (mN) numeroOrden = parseInt(mN[1], 10);
-  }
+  const numeroOrden = orden ? numeroOrdenDeArmada(orden.text) : null;
   if (numeroOrden !== null && numeroOrden === numero) {
     const lineas = String(orden.text || '').split('\n');
     const detalle = [lineas[1], lineas[2], lineas[3]]
       .filter((l) => l && l.trim())
       .join(' · ');
+    // RONDA 25: si la orden lleva 2 cotizaciones, no basta con
+    // reconocerla: hay que preguntarle al cliente CON CUÁL MIX
+    // VA A EMPEZAR, nombrando ambos — sin esa elección la orden
+    // no se puede comenzar.
+    const mixes = mixesCotizacionDeOrden(orden);
+    if (mixes) {
+      return {
+        responder: true,
+        texto: en
+          ? `Of course, your order *#${numero}* is already registered with us.${detalle ? ` (${detalle})` : ''} Since it has ${mixes.length} quotes. ${preguntaInicioMix(mixes, idioma)}`
+          : `Claro, su orden *#${numero}* ya está registrada con nosotros.${detalle ? ` (${detalle})` : ''} Como tiene ${mixes.length} cotizaciones, ${preguntaInicioMix(mixes, idioma)}`,
+        intent: 'postcierre',
+        topic: 'la referencia a su orden ya registrada',
+        sinPrefijoDespertar: true,
+      };
+    }
     return {
       responder: true,
       texto: en
@@ -4532,6 +4682,16 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
     !!ultimoBot &&
     (ultimoBot.text.includes(PREGUNTA_CAMBIO_MIX_ES) ||
       ultimoBot.text.includes(PREGUNTA_CAMBIO_MIX_EN));
+  // RONDA 25: el bot preguntó «¿con cuál mix va a empezar?»
+  // porque la orden lleva 2 cotizaciones: la respuesta del
+  // cliente es la ELECCIÓN del mix inicial, no un cambio de mix
+  // cualquiera (la comparación va en minúsculas: la pregunta
+  // puede ir con mayúscula inicial al repetirla).
+  const ultimoBotMin = ultimoBot ? String(ultimoBot.text || '').toLowerCase() : '';
+  const esperandoInicioMix =
+    !!ultimoBot &&
+    (ultimoBotMin.includes(PREGUNTA_INICIO_MIX_ES) ||
+      ultimoBotMin.includes(PREGUNTA_INICIO_MIX_EN));
   const esperandoTarjetaPc =
     !!ultimoBot &&
     (ultimoBot.text.includes('¿Débito o crédito?') ||
@@ -4561,7 +4721,11 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
     ? ultimoBot.text.includes(PREGUNTA_CAMBIO_MIX_EN)
       ? 'en'
       : 'es'
-    : idiomaOrden || idiomaMsg;
+    : esperandoInicioMix
+      ? ultimoBotMin.includes(PREGUNTA_INICIO_MIX_EN)
+        ? 'en'
+        : 'es'
+      : idiomaOrden || idiomaMsg;
   // REFERENCIA A UNA ORDEN (ronda 24): se detecta ANTES de
   // extraer el mix. Si el mensaje solo refiere a la orden, se
   // atiende aquí; si trae además un cambio concreto, el
@@ -4576,6 +4740,35 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
     textoAnalisis = refOrden.resto;
   }
   const d = extraerDatos(textoAnalisis, 'mix');
+
+  // RONDA 25 — ELECCIÓN DEL MIX PARA EMPEZAR: si la orden
+  // cerrada lleva 2 cotizaciones y el cliente elige UNO de sus
+  // mixes — porque el bot se lo acaba de preguntar
+  // (esperandoInicioMix) o porque lo eligió en el mismo mensaje
+  // en que refería a su orden —, ese mix queda como EL mix de
+  // la orden: el par se descarta, el número de orden se
+  // conserva y el total de la orden armada queda con el total
+  // de ese mix. NO pasa por el cambio de mix genérico, que
+  // quitaba TODOS los totales de la orden armada.
+  const mixesOrden = mixesCotizacionDeOrden(orden);
+  if (
+    mixesOrden &&
+    d.mix &&
+    mixesOrden.includes(d.mix) &&
+    (esperandoInicioMix || refOrden)
+  ) {
+    return decisionInicioMix(orden, d.mix, idioma);
+  }
+  if (
+    esperandoInicioMix &&
+    mixesOrden &&
+    (d.mixesCotizacion || d.psiInvalido || d.mixInvalido)
+  ) {
+    // Estábamos esperando la elección y el cliente repitió el
+    // par o nombró un mix que no es de su orden: se le vuelve
+    // a preguntar con cuál mix va a empezar, nombrando ambos.
+    return decisionPreguntaInicioMix(orden, idioma);
+  }
 
   if (d.psiInvalido || d.mixInvalido) {
     // Corrección a un mix que NO existe: redacción oficial (sin
