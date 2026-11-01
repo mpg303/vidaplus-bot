@@ -26,11 +26,11 @@
 // En el cierre se aclara UNA sola vez que el pago es POR
 // ADELANTADO (regla del dueño): en cuanto se confirme el pago se
 // carga la orden; el bot todavía NO pide ni envía datos de cobro.
-// EFECTIVO (regla del dueño, 2026-10-21): NO se acepta efectivo
-// en el lugar del trabajo (ahí vienen las estafas); si el cliente
-// pide pagar en efectivo, se registra «Efectivo (por adelantado,
-// con un encargado)» y se le avisa que el pago se entrega antes,
-// encontrándose con un encargado de la compañía.
+// EFECTIVO: es un método más, SIN regla especial — el dueño
+// mandó OLVIDAR la regla de «efectivo antes de cargar» el
+// 2026-10-31 («Quiero que olvides la regla de cash o efectivo
+// antes de cargar»): no se le pide pagarlo por adelantado ni
+// encontrarse con un encargado; se registra solo «Efectivo».
 // Al completar todos los datos, el bot:
 //   a) le responde al cliente un cierre corto con el resumen, y
 //   b) deja ARMADA en la conversación (la guarda el webhook como
@@ -89,9 +89,8 @@ const INTENTS = [
       'aceptan tarjeta', 'acepta tarjeta', 'aceptan zelle',
       'formas de pago', 'forma de pago', 'puedo pagar con',
       'do you accept', 'how can i pay',
-      // Efectivo/cash: la respuesta de esta FAQ incluye la regla
-      // del dueño (por adelantado con un encargado, nunca en el
-      // lugar del trabajo).
+      // Efectivo/cash: entran por esta FAQ de formas de pago
+      // (el efectivo ya no lleva regla especial, 2026-10-31).
       'efectivo', 'cash',
     ],
   },
@@ -359,21 +358,21 @@ function datosNecesariosEN() {
 const ZONA_EN = 'Dallas–Fort Worth, TX and surrounding areas';
 
 // ============================================================
-// REGLA DEL EFECTIVO (orden del dueño, 2026-10-21): el bot NO
-// acepta efectivo en el lugar del trabajo (ahí vienen las
-// estafas). Si el cliente quiere pagar en efectivo, el pago se
-// hace POR ADELANTADO encontrándose con un encargado de la
-// compañía, y así queda registrado en la orden.
+// EFECTIVO SIN REGLA DE ADELANTO: el dueño mandó OLVIDAR la
+// regla de «cash o efectivo antes de cargar» el 2026-10-31
+// 19:49 («Quiero que olvides la regla de cash o efectivo
+// antes de cargar»). El efectivo se registra solo como
+// «Efectivo», sin nota ni aviso especial. El valor largo
+// viejo puede venir en órdenes guardadas de antes: se sigue
+// reconociendo al leerlas (esPagoEfectivo), pero jamás se
+// vuelve a escribir ni a decir su regla.
 // ============================================================
-const PAGO_EFECTIVO = 'Efectivo (por adelantado, con un encargado)';
-const REGLA_EFECTIVO_ES =
-  'El pago en efectivo se hace por adelantado: tiene que encontrarse con uno de los encargados de la compañía para entregar el pago antes de que carguemos su orden. No recibimos efectivo en el lugar del trabajo.';
-const REGLA_EFECTIVO_EN =
-  "Cash payment is made in advance: you would meet with one of our company representatives to hand over the payment before we load your order. We don't accept cash at the jobsite.";
+const PAGO_EFECTIVO = 'Efectivo';
+const PAGO_EFECTIVO_LEGADO = 'Efectivo (por adelantado, con un encargado)';
 
-/** Mensaje de la regla del efectivo en el idioma del cliente. */
-function mensajeReglaEfectivo(idioma) {
-  return idioma === 'en' ? REGLA_EFECTIVO_EN : REGLA_EFECTIVO_ES;
+/** ¿El valor de pago dado es el efectivo (actual o legado)? */
+function esPagoEfectivo(pago) {
+  return pago === PAGO_EFECTIVO || pago === PAGO_EFECTIVO_LEGADO;
 }
 
 // ============================================================
@@ -473,13 +472,11 @@ function construirRespuesta(intentId, nombre, idioma = 'es') {
     case 'faq_pagos':
       // Formas de pago reales del negocio (sin pedir datos de cobro):
       // las CUATRO opciones del dueño (2026-10-21) — Zelle, tarjeta
-      // de débito, tarjeta de crédito y efectivo. El efectivo va
-      // siempre con su regla: por adelantado, encontrándose con un
-      // encargado; nunca en el lugar del trabajo.
+      // de débito, tarjeta de crédito y efectivo. El efectivo ya no
+      // lleva regla especial (el dueño la mandó olvidar el 2026-10-31).
       return (
         `¡Claro! 🙏 Aceptamos *Zelle*, *tarjeta de débito*, *tarjeta de crédito* y *efectivo*.\n` +
-        `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden.\n` +
-        `${REGLA_EFECTIVO_ES}`
+        `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden.`
       );
     case 'faq_minimo':
       // El mínimo real depende de la dirección del trabajo: NO se inventa cifra.
@@ -576,8 +573,7 @@ function construirRespuestaEN(intentId, nombre) {
       return (
         `Yes 🙏 We accept *Zelle*, *debit card*, *credit card* and *cash*.\n` +
         `Payment is in advance: as soon as your payment is confirmed, ` +
-        `we load your order.\n` +
-        `${REGLA_EFECTIVO_EN}`
+        `we load your order.`
       );
     case 'faq_minimo':
       return (
@@ -639,7 +635,7 @@ function datosVacios() {
     nota: null, // nota libre del cliente para la orden (ej. el reparto de una tirada grande en varios días): viaja en la orden para el dueño («Nota:»), no es un paso del flujo
     nombre: null, // nombre de la persona — se pide AL FINAL, con la orden completa
     compania: null, // nombre de su compañía, o «Particular» si no tiene
-    pago: null, // forma de pago: «Zelle» | «Tarjeta de débito» | «Tarjeta de crédito» | «Tarjeta» | «Efectivo (por adelantado, con un encargado)»
+    pago: null, // forma de pago: «Zelle» | «Tarjeta de débito» | «Tarjeta de crédito» | «Tarjeta» | «Efectivo» | «Cheque»
   };
 }
 
@@ -1018,9 +1014,9 @@ function extraerNombreCompania(raw) {
 /**
  * ¿El cliente quiere pagar en EFECTIVO? Incluye las variantes de
  * «pago en el sitio»: «cash», «en efectivo», «pago cuando
- * lleguen», «cash al entregar»… Ese pago NO se acepta en el lugar
- * del trabajo (regla del dueño, 2026-10-21): va por adelantado,
- * encontrándose con un encargado de la compañía.
+ * lleguen», «cash al entregar»… Se registra solo como
+ * «Efectivo», sin regla especial (el dueño mandó olvidar la
+ * regla de «efectivo antes de cargar» el 2026-10-31).
  */
 function esPagoEfectivo(raw) {
   const t = normalizar(raw);
@@ -1032,21 +1028,20 @@ function esPagoEfectivo(raw) {
 
 /**
  * Interpreta la respuesta al paso de la FORMA DE PAGO (el último
- * del flujo): «¿Cómo va a pagar: Zelle, tarjeta de débito, tarjeta
+ * del flujo): «¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta
  * de crédito o efectivo?» (las cuatro opciones del dueño,
  * 2026-10-21). Devuelve el valor normalizado — «Zelle», «Tarjeta
  * de débito» o «Tarjeta de crédito» —, o «Tarjeta» a secas si el
  * cliente dijo solo «tarjeta»/«card» sin aclarar (el flujo le
- * pregunta «¿Débito o crédito?» una sola vez), o «Efectivo (por
- * adelantado, con un encargado)» si pidió pagar en efectivo, o
- * null si no se entiende ninguna forma de pago.
+ * pregunta «¿Débito o crédito?» una sola vez), o «Efectivo» si
+ * pidió pagar en efectivo, o null si no se entiende ninguna
+ * forma de pago.
  */
 function extraerPago(raw) {
   const t = normalizar(raw);
   // El efectivo manda sobre las demás palabras: quien dice
-  // «efectivo» (o «cash», «pago cuando lleguen»…) quiere pagar en
-  // efectivo, y eso se registra SOLO como pago por adelantado con
-  // un encargado — nunca como pago en el lugar del trabajo.
+  // «efectivo» (o «cash», «pago cuando lleguen»…) quiere pagar
+  // en efectivo, y se registra solo como «Efectivo».
   if (esPagoEfectivo(raw)) return PAGO_EFECTIVO;
   if (/\bzelle\b/.test(t)) return 'Zelle';
   // Cheque (orden del dueño, 2026-10-31): método aceptado; se
@@ -1954,8 +1949,9 @@ function extraerDatos(texto, paso) {
     if (pagoDetectado === 'Tarjeta') d.pagoGenerica = true;
     else if (pagoDetectado) {
       d.pago = pagoDetectado;
-      // Efectivo: queda registrado como pago por adelantado con
-      // un encargado, y el flujo avisa la regla en este turno.
+      // Efectivo: se marca para que la línea genérica de «pago
+      // por adelantado» no se le repita en este turno (la regla
+      // propia del efectivo se olvidó el 2026-10-31).
       if (pagoDetectado === PAGO_EFECTIVO) d.pagoEfectivo = true;
     }
   } else if (
@@ -2032,7 +2028,7 @@ function pagoDisplay(pago, idioma) {
   if (pago === 'Tarjeta de débito') return 'Debit card';
   if (pago === 'Tarjeta de crédito') return 'Credit card';
   if (pago === PAGO_CHEQUE) return 'Check';
-  if (pago === PAGO_EFECTIVO) return 'Cash (in advance, with a company representative)';
+  if (esPagoEfectivo(pago)) return 'Cash';
   return pago;
 }
 
@@ -2519,7 +2515,7 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
       case 'compania':
         return "And what's the name of your company? If you don't have one and it's personal, just let me know and we'll leave it that way.";
       case 'pago':
-        return 'How will you pay: Zelle, debit card, credit card, cash or check?';
+        return 'How will you pay: cash, debit card, credit card or Zelle?';
       default:
         return '';
     }
@@ -2587,12 +2583,14 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
       return '¿Y cuál es el nombre de su compañía? Si no tiene compañía y es particular, dígamelo y así lo dejamos.';
     case 'pago':
       // Último dato: la forma de pago (sin pedir datos de cobro).
-      // Opciones (orden del dueño, 2026-10-21): Zelle, tarjeta
-      // de débito, tarjeta de crédito y efectivo — el efectivo
-      // con su regla de pago por adelantado con un encargado
-      // (nunca en el lugar del trabajo). El CHEQUE se sumó el
-      // 2026-10-31 (se le suman los taxes).
-      return '¿Cómo va a pagar: Zelle, tarjeta de débito, tarjeta de crédito, efectivo o cheque?';
+      // La pregunta ofrece SOLO estas opciones y en este orden
+      // (palabra del dueño, 2026-10-31 19:51: «Después que
+      // tengas toda la order lista vas a preguntar cómo vas a
+      // pagar cash debit card credit card o zelle»): efectivo,
+      // débito, crédito, Zelle. El CHEQUE no se ofrece en la
+      // pregunta, pero sigue ACEPTADO si el cliente lo nombra
+      // (se sumó el 2026-10-31; se le suman los taxes).
+      return '¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta de crédito o Zelle?';
     default:
       return '';
   }
@@ -2852,7 +2850,9 @@ function resumenCliente(datos, nombre, idioma = 'es') {
         : `\nWe'll confirm price and availability right away. ` +
           `A specialist will help you right here. 🙏\n`) +
       // Same rule as in Spanish: payment is IN ADVANCE, said once.
-      `Payment is in advance: as soon as your payment is confirmed, we load your order. 🚛` +
+      (esPagoEfectivo(datos.pago)
+        ? ''
+        : `Payment is in advance: as soon as your payment is confirmed, we load your order. 🚛`) +
       // Nota del método (crédito/cheque/Zelle), si aplica.
       (notaMetodoPago(datos.pago, 'en') ? `\n${notaMetodoPago(datos.pago, 'en')}` : '')
     );
@@ -2872,7 +2872,9 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     // Regla del dueño: el pago es POR ADELANTADO. Se avisa UNA
     // sola vez, aquí en el cierre (no en la pregunta del pago);
     // el bot todavía no pide ni envía datos de cobro.
-    `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛` +
+    (esPagoEfectivo(datos.pago)
+      ? ''
+      : `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛`) +
     // Nota del método (crédito: recargo 4%; cheque: taxes
     // 8.25%; Zelle: enviarlo antes de cargar, al correo de JMP).
     (notaMetodoPago(datos.pago, 'es') ? `\n${notaMetodoPago(datos.pago, 'es')}` : '')
@@ -2894,14 +2896,18 @@ function textoCierreTrasOrden(datos, nombre, idioma = 'es') {
     return (
       `All set${n}! ✅ Your order is registered with payment by *${pagoDisplay(datos.pago, 'en')}*.` +
       (notaMetodoPago(datos.pago, 'en') ? `\n${notaMetodoPago(datos.pago, 'en')}` : '') +
-      `\nPayment is in advance: as soon as your payment is confirmed, we load your order. 🚛` +
+      (esPagoEfectivo(datos.pago)
+        ? ''
+        : `\nPayment is in advance: as soon as your payment is confirmed, we load your order. 🚛`) +
       `\nA specialist will help you right here. 🙏`
     );
   }
   return (
     `¡Listo${n}! ✅ Ya quedó registrada su orden con pago en *${datos.pago}*.` +
     (notaMetodoPago(datos.pago, 'es') ? `\n${notaMetodoPago(datos.pago, 'es')}` : '') +
-    `\nEl pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛` +
+    (esPagoEfectivo(datos.pago)
+      ? ''
+      : `\nEl pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛`) +
     `\nUn especialista le atiende por aquí mismo. 🙏`
   );
 }
@@ -3438,12 +3444,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       : resumenCliente(datos, datos.nombre || conversacion.name, idioma);
     return {
       responder: true,
-      // Si el pago es en efectivo, el mensaje de la regla va
-      // primero y el cierre normal sigue enseguida.
-      texto:
-        datos.pago === PAGO_EFECTIVO && avisoEfectivo
-          ? `${mensajeReglaEfectivo(idioma)}\n${textoResumen}`
-          : textoResumen,
+      texto: textoResumen,
       intent: flow.tipo,
       topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
       confirmacionArmada,
@@ -3541,11 +3542,6 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   }
   if (nuevos.length) {
     partes.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
-  }
-  if (avisoEfectivo) {
-    // El cliente dio el efectivo por adelantado a mitad del flujo:
-    // se le avisa la regla ahora y el flujo sigue su curso.
-    partes.push(mensajeReglaEfectivo(idioma));
   }
   if (detectados.medidas) {
     partes.push(lineaMedidas(detectados.medidas, idioma));
@@ -3904,13 +3900,13 @@ function aplicarCambioPagoEnConfirmacion(textoArmada, nuevoPago) {
 /** Etiqueta corta del método para preguntas/confirmaciones. */
 function etiquetaCortaPago(pago, idioma) {
   if (idioma === 'en') {
-    if (pago === PAGO_EFECTIVO) return 'cash';
+    if (esPagoEfectivo(pago)) return 'cash';
     if (pago === 'Tarjeta de débito') return 'debit card';
     if (pago === 'Tarjeta de crédito') return 'credit card';
     if (pago === PAGO_CHEQUE) return 'check';
     return pago;
   }
-  if (pago === PAGO_EFECTIVO) return 'efectivo';
+  if (esPagoEfectivo(pago)) return 'efectivo';
   if (pago === PAGO_CHEQUE) return 'cheque';
   return pago;
 }
@@ -3928,7 +3924,8 @@ function infoMetodoPago(pago, idioma) {
       case 'Tarjeta de débito':
         return 'Yes, we accept debit cards, with no extra charges.';
       case PAGO_EFECTIVO:
-        return 'Yes, we accept cash: payment is made in advance, by meeting one of our company representatives. We do not accept cash at the jobsite.';
+      case PAGO_EFECTIVO_LEGADO:
+        return 'Yes, we accept cash.';
       default:
         return '';
     }
@@ -3943,7 +3940,8 @@ function infoMetodoPago(pago, idioma) {
     case 'Tarjeta de débito':
       return 'Sí, aceptamos tarjeta de débito, sin cargos extra.';
     case PAGO_EFECTIVO:
-      return 'Sí, aceptamos efectivo: el pago se hace por adelantado, encontrándose con uno de los encargados de la compañía. No recibimos efectivo en el lugar del trabajo.';
+    case PAGO_EFECTIVO_LEGADO:
+      return 'Sí, aceptamos efectivo.';
     default:
       return '';
   }
@@ -3952,15 +3950,15 @@ function infoMetodoPago(pago, idioma) {
 /** Lista de métodos aceptados, para la pregunta genérica. */
 function textoListaMetodos(idioma) {
   return idioma === 'en'
-    ? `We accept: cash (in advance, with a company representative), debit card, credit card (a ${RECARGO_CREDITO_PCT}% processing surcharge applies), Zelle (sent before we load the concrete) and check (taxes of ${TAXES_TX} are added). Which one do you want to switch your order to?`
-    : `Las formas de pago que aceptamos son: efectivo (por adelantado, con un encargado), tarjeta de débito, tarjeta de crédito (se suma un cargo por procesamiento del ${RECARGO_CREDITO_PCT}%), Zelle (se envía antes de cargar el concreto) y cheque (se suman los taxes, ${TAXES_TX}). ¿A cuál quiere cambiar su orden?`;
+    ? `We accept: cash, debit card, credit card (a ${RECARGO_CREDITO_PCT}% processing surcharge applies), Zelle (sent before we load the concrete) and check (taxes of ${TAXES_TX} are added). Which one do you want to switch your order to?`
+    : `Las formas de pago que aceptamos son: efectivo, tarjeta de débito, tarjeta de crédito (se suma un cargo por procesamiento del ${RECARGO_CREDITO_PCT}%), Zelle (se envía antes de cargar el concreto) y cheque (se suman los taxes, ${TAXES_TX}). ¿A cuál quiere cambiar su orden?`;
+
 }
 
 /** Aplica el cambio de forma de pago a la orden ya cerrada. */
 function decisionCambioPago(orden, nuevoPago, idioma) {
   const nuevaArmada = aplicarCambioPagoEnConfirmacion(orden.text, nuevoPago);
-  const nota =
-    nuevoPago === PAGO_EFECTIVO ? mensajeReglaEfectivo(idioma) : notaMetodoPago(nuevoPago, idioma);
+  const nota = notaMetodoPago(nuevoPago, idioma);
   const decision = {
     responder: true,
     texto:
@@ -4438,8 +4436,12 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
   // (2026-10-31 18:03): un «mejor por Zelle» tras el cierre es
   // un CAMBIO de la orden, no la pregunta genérica de pagos;
   // sin orden cerrada, manejarPostCierre devuelve null y sigue
-  // la respuesta normal del intent.
-  if (intent.id === 'otro' || intent.id === 'pago') {
+  // la respuesta normal del intent. El intent «faq_pagos»
+  // también entra (ronda 12, 2026-10-31): sus palabras clave
+  // («efectivo», «cash») se tragaban la pregunta post-cierre
+  // «¿Y si pago en efectivo?» y salía la FAQ genérica en vez
+  // de la info del método con la oferta de cambio.
+  if (intent.id === 'otro' || intent.id === 'pago' || intent.id === 'faq_pagos') {
     const postCierre = manejarPostCierre(conversacion, textoCliente, idiomaMsg);
     if (postCierre) return postCierre;
   }
