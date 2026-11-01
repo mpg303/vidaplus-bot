@@ -628,6 +628,7 @@ function datosVacios() {
   return {
     yardas: null, // { cantidad: '10', plus: false }
     mix: null,
+    mixesCotizacion: null, // ['3000 psi', '3500 psi'] cuando el cliente pide precio de 2+ mixes: son 2+ COTIZACIONES con todo lo demás igual y solo cambia el mix (regla del dueño, 2026-10-31 19:03); mientras exista el par, el paso del mix cuenta como dado y NO se obliga al cliente a elegir uno
     aire: null, // 'con aire' | 'no aire' — se pide junto con el mix
     pompa: null, // null = aún no se preguntó · 'pendiente' = dijo que sí ocupa y falta que elija · 'Sin pompa' = dijo que no · 'Boom pump' | 'Small line / Trailer pump' (small line y trailer son la misma) — se pregunta tras el aire (regla del dueño, 2026-10-30)
     direccion: null,
@@ -652,7 +653,7 @@ function pasoActual(flow) {
       // y la orden sigue; si dice que sí, debe elegir el tipo
       // (boom o small line/trailer, que son la misma) — regla
       // del dueño, 2026-10-30.
-      if (p === 'mix') return !flow.datos.mix || !flow.datos.aire || !flow.datos.pompa || flow.datos.pompa === 'pendiente';
+      if (p === 'mix') return !(flow.datos.mix || flow.datos.mixesCotizacion) || !flow.datos.aire || !flow.datos.pompa || flow.datos.pompa === 'pendiente';
       return !flow.datos[p];
     }) || null
   );
@@ -1766,10 +1767,11 @@ function extraerDatos(texto, paso) {
   // existe salía corregido como «no disponible» (falla real
   // del 2026-10-31: «Ocupo precio de 3,000 psi y otro de
   // 3,500 psi»). Y si el mensaje trae DOS O MÁS mixes
-  // DISTINTOS, es una comparación o pregunta de precios: no
-  // se elige ninguno y NINGUNO se marca inválido — la frase
-  // de mix no disponible SOLO sale cuando el cliente pide UN
-  // ÚNICO mix que no existe.
+  // DISTINTOS, es una comparación o pregunta de precios:
+  // NINGUNO se marca inválido — la frase de mix no
+  // disponible SOLO sale cuando el cliente pide UN ÚNICO
+  // mix que no existe — y los válidos se guardan como
+  // COTIZACIONES (el par, más abajo): no hay que elegir uno.
   const mencionesPsi = [
     ...raw.matchAll(/(\d{1,3}(?:,\d{3})+|\d{3,5})\s*(?:psi|libras)\b/gi),
   ].map((m) => parseInt(m[1].replace(/,/g, ''), 10));
@@ -1792,9 +1794,18 @@ function extraerDatos(texto, paso) {
     d.mix = producto;
   } else if (mPsi) {
     // Con DOS O MÁS mixes distintos en el mensaje (comparación
-    // o pregunta de precios, variosMixes) no se toca el mix ni
-    // se marca ninguno como inválido: esa detección manda.
-    if (!variosMixes) {
+    // o pregunta de precios, variosMixes) no se marca ninguno
+    // como inválido: esa detección manda. Y los mixes VÁLIDOS
+    // pedidos se guardan como COTIZACIONES (regla del dueño,
+    // 2026-10-31 19:03: «recuerda que está pidiendo precio,
+    // entonces tienes que hacer 2 cotizaciones — con el mix
+    // diferente pero todo lo demás [igual]»): el cliente NO
+    // tiene que elegir uno; la orden lleva el par y se cotiza
+    // cada mix con los mismos demás datos.
+    if (variosMixes) {
+      const validos = [...new Set(mencionesPsi.filter((n) => MIXES_PSI.has(n)))].sort((a, b) => a - b);
+      if (validos.length > 1) d.mixesCotizacion = validos.map((n) => `${n} psi`);
+    } else {
       const nPsi = parseInt(mPsi[1].replace(/,/g, ''), 10);
       if (!MIXES_PSI.has(nPsi)) {
         // PSI que no existe (ej. «quiero 2500 psi», «5500 psi»):
@@ -1985,6 +1996,25 @@ function fusionarDatos(flow, d) {
       }
     }
   }
+  // COTIZACIONES POR MIX (regla del dueño, 2026-10-31 19:03):
+  // si el cliente pidió precio de 2+ mixes, la orden lleva el
+  // par como mix visible (2 cotizaciones, todo lo demás igual)
+  // y NO se le obliga a elegir uno — el campo 'mix' de las
+  // confirmaciones representa al par. Si después el cliente
+  // elige UN solo mix (llega d.mix), el par se descarta y
+  // manda ese mix.
+  if (d.mixesCotizacion) {
+    const antesMix = flow.datos.mixesCotizacion
+      ? flow.datos.mixesCotizacion.join('|')
+      : flow.datos.mix || null;
+    const nuevoMix = d.mixesCotizacion.join('|');
+    flow.datos.mixesCotizacion = d.mixesCotizacion;
+    flow.datos.mix = null;
+    if (!antesMix) aplicados.push('mix');
+    else if (antesMix !== nuevoMix && !corregidos.includes('mix')) corregidos.push('mix');
+  } else if (d.mix && flow.datos.mixesCotizacion) {
+    flow.datos.mixesCotizacion = null;
+  }
   // Inspección: la mención explícita manda en AMBOS sentidos —
   // «No inspection» la deja en false, no solo se enciende.
   if (d.inspeccion !== undefined) flow.datos.inspeccion = d.inspeccion;
@@ -2006,6 +2036,32 @@ function pagoDisplay(pago, idioma) {
   return pago;
 }
 
+/**
+ * Texto del par (o más) de mixes pedidos como cotizaciones:
+ * «3000 psi y 3500 psi (2 cotizaciones)» — con el mix
+ * diferente pero todo lo demás igual (regla del dueño,
+ * 2026-10-31 19:03).
+ */
+function textoMixesCotizacion(mixes, idioma = 'es') {
+  const lista = mixes.join(idioma === 'en' ? ' and ' : ' y ');
+  return idioma === 'en'
+    ? `${lista} (${mixes.length} quotes)`
+    : `${lista} (${mixes.length} cotizaciones)`;
+}
+
+/** Lista de mixes del par, sin el conteo: «3000 psi y 3500 psi». */
+function listaMixesCotizacion(mixes, idioma = 'es') {
+  return mixes.join(idioma === 'en' ? ' and ' : ' y ');
+}
+
+/** El mix visible de la orden: el único elegido, o el par de cotizaciones. */
+function mixVisible(datos, idioma = 'es') {
+  if (datos.mixesCotizacion && datos.mixesCotizacion.length) {
+    return textoMixesCotizacion(datos.mixesCotizacion, idioma);
+  }
+  return datos.mix;
+}
+
 /** Confirmación breve de un dato recién capturado. */
 function confirmacionDe(campo, datos, idioma = 'es') {
   if (idioma === 'en') {
@@ -2013,7 +2069,9 @@ function confirmacionDe(campo, datos, idioma = 'es') {
       case 'yardas':
         return `got it: *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
       case 'mix':
-        return `got the mix: *${datos.mix}*`;
+        return datos.mixesCotizacion
+          ? `got the *${datos.mixesCotizacion.length} quotes: ${listaMixesCotizacion(datos.mixesCotizacion, 'en')}*`
+          : `got the mix: *${datos.mix}*`;
       case 'aire':
         return `noted: concrete *${aireDisplay(datos.aire, idioma)}*`;
       case 'pompa':
@@ -2047,7 +2105,9 @@ function confirmacionDe(campo, datos, idioma = 'es') {
     case 'yardas':
       return `anotadas las *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
     case 'mix':
-      return `anotado el mix: *${datos.mix}*`;
+      return datos.mixesCotizacion
+        ? `anotadas las *${datos.mixesCotizacion.length} cotizaciones: ${listaMixesCotizacion(datos.mixesCotizacion, 'es')}*`
+        : `anotado el mix: *${datos.mix}*`;
     case 'aire':
       return `anotado: concreto *${datos.aire}*`;
     case 'pompa':
@@ -2085,7 +2145,9 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
       case 'yardas':
         return `changed to *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
       case 'mix':
-        return `changed to the mix: *${datos.mix}*`;
+        return datos.mixesCotizacion
+          ? `changed to the *${datos.mixesCotizacion.length} quotes: ${listaMixesCotizacion(datos.mixesCotizacion, 'en')}*`
+          : `changed to the mix: *${datos.mix}*`;
       case 'aire':
         return `changed to: concrete *${aireDisplay(datos.aire, idioma)}*`;
       case 'pompa':
@@ -2115,7 +2177,9 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
     case 'yardas':
       return `lo dejo en *${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}*`;
     case 'mix':
-      return `lo dejo en el mix: *${datos.mix}*`;
+      return datos.mixesCotizacion
+        ? `lo dejo en las *${datos.mixesCotizacion.length} cotizaciones: ${listaMixesCotizacion(datos.mixesCotizacion, 'es')}*`
+        : `lo dejo en el mix: *${datos.mix}*`;
     case 'aire':
       return `lo dejo: concreto *${datos.aire}*`;
     case 'pompa':
@@ -2409,22 +2473,22 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
           ? 'How many yards do you need? For example: 10 yards, or 10 yards plus if you might need a little more.'
           : 'How many yards do you need?';
       case 'mix':
-        if (datos.mix && !datos.aire) {
+        if ((datos.mix || datos.mixesCotizacion) && !datos.aire) {
           return conEjemplo
             ? 'Does the concrete need air or no air? Air helps against cold weather in outdoor work; indoor floors are usually ordered without air.'
             : 'And does the concrete need it with air or no air?';
         }
-        if (datos.mix && datos.aire && !datos.pompa) {
+        if ((datos.mix || datos.mixesCotizacion) && datos.aire && !datos.pompa) {
           // Tras el aire se pregunta si va a ocupar alguna
           // pompa (regla del dueño, 2026-10-30): si dice que no,
           // la orden sigue; solo si dice que sí se le dan las
           // opciones de pompa.
           return 'Will you need a pump for this job?';
         }
-        if (datos.mix && datos.aire && datos.pompa === 'pendiente') {
+        if ((datos.mix || datos.mixesCotizacion) && datos.aire && datos.pompa === 'pendiente') {
           return 'What kind of pump: boom pump or small line pump (trailer pump)?';
         }
-        if (!datos.mix && datos.aire) {
+        if (!datos.mix && !datos.mixesCotizacion && datos.aire) {
           return conEjemplo
             ? 'What mix or strength (PSI) do you need? For example: 3000 psi or 4000 psi.'
             : 'What mix or strength (PSI) do you need?';
@@ -2468,22 +2532,25 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
     case 'mix':
       // Con el mix se pregunta también el aire («aire o no aire»);
       // si ya está uno de los dos, se pregunta solo el que falta.
-      if (datos.mix && !datos.aire) {
+      // El par de cotizaciones cuenta como mix dado: no se
+      // vuelve a pedir que elija un mix (regla del dueño,
+      // 2026-10-31 19:03).
+      if ((datos.mix || datos.mixesCotizacion) && !datos.aire) {
         return conEjemplo
           ? '¿El concreto va con aire o no aire? El aire ayuda contra el frío en trabajos de exterior; para interiores suele pedirse sin aire.'
           : '¿Y el concreto va con aire o no aire?';
       }
-      if (datos.mix && datos.aire && !datos.pompa) {
+      if ((datos.mix || datos.mixesCotizacion) && datos.aire && !datos.pompa) {
         // Tras el aire se pregunta si va a ocupar alguna pompa
         // (regla del dueño, 2026-10-30): si dice que no, la
         // orden sigue; solo si dice que sí se le dan las
         // opciones de pompa.
         return '¿Va a ocupar alguna pompa para este trabajo?';
       }
-      if (datos.mix && datos.aire && datos.pompa === 'pendiente') {
+      if ((datos.mix || datos.mixesCotizacion) && datos.aire && datos.pompa === 'pendiente') {
         return '¿Qué pompa ocupa: boom pump o small line pump (trailer pump)?';
       }
-      if (!datos.mix && datos.aire) {
+      if (!datos.mix && !datos.mixesCotizacion && datos.aire) {
         return conEjemplo
           ? '¿Qué mix o resistencia (PSI) necesita? Por ejemplo: 3000 psi o 4000 psi.'
           : '¿Qué mix o resistencia (PSI) necesita?';
@@ -2622,7 +2689,7 @@ function armarConfirmacion(datos, conversacion) {
   const lineas = [
     `${fechaCortaEntrega(datos.fecha)} ${nombreCliente}${datos.compania ? ` / ${datos.compania}` : ''}`,
     `${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}`,
-    `${datos.mix}${datos.aire ? ` ${datos.aire}` : ''}${datos.pompa && datos.pompa !== 'pendiente' ? ` (${datos.pompa})` : ''}`,
+    `${mixVisible(datos, 'es')}${datos.aire ? ` ${datos.aire}` : ''}${datos.pompa && datos.pompa !== 'pendiente' ? ` (${datos.pompa})` : ''}`,
     `${datos.direccion}`,
     `${datos.hora} jobsite`,
     `Slump${datos.slump ? ` ${datos.slump}` : ''}${datos.inspeccion ? ' (inspection)' : ''}`,
@@ -2647,7 +2714,7 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     return (
       `All set${n}! ✅ Your order is registered:\n` +
       `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
-      `• Mix: ${datos.mix}${datos.aire ? `, ${aireDisplay(datos.aire, idioma)}` : ''}\n` +
+      `• Mix: ${mixVisible(datos, 'en')}${datos.aire ? `, ${aireDisplay(datos.aire, idioma)}` : ''}\n` +
       (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente' ? `• Pump: ${datos.pompa}\n` : '') +
       `• Address: ${datos.direccion}\n` +
       `• Day: ${datos.fecha} — ${datos.hora}\n` +
@@ -2663,7 +2730,7 @@ function resumenCliente(datos, nombre, idioma = 'es') {
   return (
     `¡Listo${n}! ✅ Ya quedó registrada su orden:\n` +
     `• ${datos.yardas.cantidad} yds${datos.yardas.plus ? ' plus' : ''}\n` +
-    `• Mix: ${datos.mix}${datos.aire ? `, ${datos.aire}` : ''}\n` +
+    `• Mix: ${mixVisible(datos, 'es')}${datos.aire ? `, ${datos.aire}` : ''}\n` +
     (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente' ? `• Pompa: ${datos.pompa}\n` : '') +
     `• Dirección: ${datos.direccion}\n` +
     `• Día: ${datos.fecha} — ${datos.hora}\n` +
@@ -3763,6 +3830,30 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
         idioma === 'en'
           ? `Done ✅ I updated the mix on your order to *${d.mix}*.`
           : `Perfecto, ya corregí el mix de su orden: queda en *${d.mix}*. ✅`,
+      intent: 'postcierre',
+      topic: 'la corrección del mix de su orden',
+      sinPrefijoDespertar: true,
+    };
+    if (nuevaArmada && nuevaArmada !== orden.text) {
+      decision.confirmacionArmada = nuevaArmada;
+    }
+    return decision;
+  }
+  if (d.mixesCotizacion) {
+    // Tras el cierre el cliente pide cotizar varios mixes (o
+    // pasa de un mix a las cotizaciones): la orden armada queda
+    // con el par — «con el mix diferente pero todo lo demás
+    // igual» (regla del dueño, 2026-10-31 19:03).
+    const nuevaArmada = aplicarCambioMixEnConfirmacion(
+      orden.text,
+      textoMixesCotizacion(d.mixesCotizacion, 'es')
+    );
+    const decision = {
+      responder: true,
+      texto:
+        idioma === 'en'
+          ? `Done ✅ I updated your order to the *${d.mixesCotizacion.length} quotes: ${listaMixesCotizacion(d.mixesCotizacion, 'en')}* — everything else stays the same.`
+          : `Perfecto, ya corregí su orden: quedan las *${d.mixesCotizacion.length} cotizaciones: ${listaMixesCotizacion(d.mixesCotizacion, 'es')}* — todo lo demás igual. ✅`,
       intent: 'postcierre',
       topic: 'la corrección del mix de su orden',
       sinPrefijoDespertar: true,
