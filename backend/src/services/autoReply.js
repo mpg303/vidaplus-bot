@@ -715,7 +715,7 @@ function pareceDireccionSuelta(raw) {
   if (tokens.length < 1 || tokens.length > 6) return false;
   const NO_CALLE = new Set([
     'de', 'del', 'y', 'con', 'sin', 'para', 'por', 'el', 'la', 'los', 'las', 'un', 'una',
-    'yardas', 'yarda', 'yds', 'yd', 'psi', 'libras', 'libra', 'slump', 'aire', 'pompa',
+    'yardas', 'yarda', 'yards', 'yard', 'yds', 'yd', 'psi', 'libras', 'libra', 'slump', 'aire', 'pompa',
     'bomba', 'pump', 'mix', 'mezcla', 'concreto', 'precio', 'dolares', 'dollars',
     'pesos', 'hoy', 'manana', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes',
     'sabado', 'domingo', 'am', 'pm', 'hora', 'horas', 'dia', 'dias', 'quiero',
@@ -2661,6 +2661,113 @@ function fechaCortaEntrega(fechaTexto) {
 }
 
 /**
+ * PRECIOS DE LOS MIXES (dictados por el dueño, 2026-10-31
+ * 15:36–15:42, por yarda, SOLO DALLAS): Jesus los dictó para
+ * que el bot cotice — «los precios tú ya los tienes de los
+ * mixes» (2026-10-31 19:22). El SERVICIO de pompa (boom /
+ * small line-trailer) sigue SIN precio definido (0 a
+ * propósito): una orden que ocupa el servicio cierra sin
+ * total y el equipo lo confirma.
+ */
+const PRECIOS_MIX = {
+  '3000 psi': 160,
+  '3500 psi': 165,
+  '3600 psi': 170,
+  '4000 psi': 170,
+  '4500 psi': 175,
+  '5000 psi': 180,
+};
+const PRECIOS_POMPA_SERVICIO = {
+  'Boom pump': 0,
+  'Small line / Trailer pump': 0,
+};
+/** Taxes de Texas que lleva TODO cálculo (regla del dueño, 2026-10-31 18:17). */
+const IMPUESTOS_PCT = 8.25;
+
+function formatearDinero(n) {
+  return Number(n).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+/**
+ * ¿La dirección del trabajo es en DALLAS? La tabla de precios
+ * es SOLO para Dallas (orden del dueño, 2026-10-31 15:38):
+ * solo cuenta la ciudad «Dallas» exacta («Lake Dallas» es
+ * otra ciudad); si la ciudad no se puede determinar, NO es
+ * Dallas a efectos del total.
+ */
+function direccionEsDallas(direccion) {
+  if (!direccion) return false;
+  return detectarCiudad(direccion) === 'Dallas';
+}
+
+/**
+ * TOTAL de la orden para UN mix dado, con la tabla de precios
+ * y los taxes del 8.25% incluidos. Devuelve null (sin total:
+ * el equipo lo confirma) si la dirección no es de Dallas, si
+ * el mix no tiene precio en la tabla (productos sin PSI,
+ * «Pompa mix 50-50» sin base) o si la orden ocupa un servicio
+ * de pompa aún sin precio definido.
+ */
+function calcularTotalParaMix(datos, mix) {
+  if (!datos || !datos.yardas || !mix) return null;
+  if (!direccionEsDallas(datos.direccion)) return null;
+  const yardas = parseFloat(String(datos.yardas.cantidad).replace(',', '.'));
+  if (!isFinite(yardas) || yardas <= 0) return null;
+  if (mix === 'Pompa mix 50-50') return null;
+  const precioYarda = PRECIOS_MIX[mix];
+  if (!(precioYarda > 0)) return null;
+  let total = yardas * precioYarda;
+  if (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente') {
+    const precioPompa = PRECIOS_POMPA_SERVICIO[datos.pompa];
+    if (!(precioPompa > 0)) return null;
+    total += precioPompa;
+  }
+  total *= 1 + IMPUESTOS_PCT / 100;
+  return Math.round(total * 100) / 100;
+}
+
+/**
+ * Totales de la orden: { uno: total } si hay un solo mix, o
+ * { par: [{mix, total}…] } si la orden lleva las cotizaciones
+ * (2+ mixes, mismo todo — ronda 10). Null si algún total no
+ * se puede calcular: no se muestra ninguno a medias.
+ */
+function totalesCotizacion(datos) {
+  if (datos.mixesCotizacion && datos.mixesCotizacion.length) {
+    const par = datos.mixesCotizacion.map((mix) => ({ mix, total: calcularTotalParaMix(datos, mix) }));
+    if (par.some((p) => p.total === null)) return null;
+    return { par };
+  }
+  const total = calcularTotalParaMix(datos, datos.mix);
+  return total === null ? null : { uno: total };
+}
+
+/** Bloque de precios para el resumen al cliente (null si no hay total). */
+function bloquePreciosResumen(datos, idioma = 'es') {
+  const tot = totalesCotizacion(datos);
+  if (!tot) return null;
+  if (idioma === 'en') {
+    if (tot.par) {
+      return (
+        '💰 *Your quote prices (8.25% taxes included):*\n' +
+        tot.par.map((p) => `• ${p.mix}: $${formatearDinero(p.total)}`).join('\n')
+      );
+    }
+    return `💰 *Total: $${formatearDinero(tot.uno)}* (includes 8.25% taxes)`;
+  }
+  if (tot.par) {
+    return (
+      '💰 *Precios de sus cotizaciones (incluyen los taxes del 8.25%):*\n' +
+      tot.par.map((p) => `• ${p.mix}: $${formatearDinero(p.total)}`).join('\n')
+    );
+  }
+  return `💰 *Total: $${formatearDinero(tot.uno)}* (incluye los taxes del 8.25%)`;
+}
+
+/**
  * Arma el texto de CONFIRMACIÓN PARA EL CLIENTE con el formato exacto
  * del dueño (texto plano, una línea por dato, en este orden):
  *   {fecha M/D/AA} {nombre de la orden}{ / compañía, si la dio}
@@ -2698,6 +2805,23 @@ function armarConfirmacion(datos, conversacion) {
   // Al final va la forma de pago que eligió el cliente (línea
   // nueva; las líneas del formato del dueño no cambian).
   if (datos.pago) lineas.push(`Pago: ${datos.pago}`);
+  // TOTAL(ES) de la orden con la tabla de precios del dueño
+  // (ronda 11, 2026-10-31 19:22): con las cotizaciones va un
+  // total por mix; si ningún total se puede calcular, la
+  // orden va SIN línea de total — jamás un total inventado.
+  const totArmada = totalesCotizacion(datos);
+  if (totArmada) {
+    if (totArmada.par) {
+      for (const p of totArmada.par) lineas.push(`Total ${p.mix}: $${formatearDinero(p.total)}`);
+    } else {
+      lineas.push(`Total: $${formatearDinero(totArmada.uno)}`);
+    }
+  }
+  // Fuera de Dallas (o ciudad no determinable) no hay total
+  // con la tabla: la orden lo dice claro para el dueño.
+  if (!direccionEsDallas(datos.direccion)) {
+    lineas.push('⚠ Fuera de Dallas: el precio lo confirma Jesus');
+  }
   // Nota del cliente (ej. el reparto de la tirada en varios
   // días, «tirar en 2 días, 50 y 50»): va al final de la orden
   // para que el dueño la vea tal como el cliente la pidió.
@@ -2710,6 +2834,10 @@ function armarConfirmacion(datos, conversacion) {
 /** Cierre corto al cliente cuando el flujo queda completo. */
 function resumenCliente(datos, nombre, idioma = 'es') {
   const n = nombre && nombre !== '' ? ` ${nombre}` : '';
+  // Precios de la orden (ronda 11): si la tabla permite el
+  // total, el resumen lo trae (ya no se dice «le confirmamos
+  // el precio» cuando el precio YA va en la orden).
+  const bloquePrecios = bloquePreciosResumen(datos, idioma);
   if (idioma === 'en') {
     return (
       `All set${n}! ✅ Your order is registered:\n` +
@@ -2719,8 +2847,10 @@ function resumenCliente(datos, nombre, idioma = 'es') {
       `• Address: ${datos.direccion}\n` +
       `• Day: ${datos.fecha} — ${datos.hora}\n` +
       (datos.pago ? `• Payment: ${pagoDisplay(datos.pago, idioma)}\n` : '') +
-      `\nWe'll confirm price and availability right away. ` +
-      `A specialist will help you right here. 🙏\n` +
+      (bloquePrecios
+        ? `\n${bloquePrecios}\n` + `A specialist will help you right here. 🙏\n`
+        : `\nWe'll confirm price and availability right away. ` +
+          `A specialist will help you right here. 🙏\n`) +
       // Same rule as in Spanish: payment is IN ADVANCE, said once.
       `Payment is in advance: as soon as your payment is confirmed, we load your order. 🚛` +
       // Nota del método (crédito/cheque/Zelle), si aplica.
@@ -2735,8 +2865,10 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     `• Dirección: ${datos.direccion}\n` +
     `• Día: ${datos.fecha} — ${datos.hora}\n` +
     (datos.pago ? `• Pago: ${datos.pago}\n` : '') +
-    `\nLe confirmamos precio y disponibilidad en seguida. ` +
-    `Un especialista le atiende por aquí mismo. 🙏\n` +
+    (bloquePrecios
+      ? `\n${bloquePrecios}\n` + `Un especialista le atiende por aquí mismo. 🙏\n`
+      : `\nLe confirmamos precio y disponibilidad en seguida. ` +
+        `Un especialista le atiende por aquí mismo. 🙏\n`) +
     // Regla del dueño: el pago es POR ADELANTADO. Se avisa UNA
     // sola vez, aquí en el cierre (no en la pregunta del pago);
     // el bot todavía no pide ni envía datos de cobro.
@@ -2744,6 +2876,33 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     // Nota del método (crédito: recargo 4%; cheque: taxes
     // 8.25%; Zelle: enviarlo antes de cargar, al correo de JMP).
     (notaMetodoPago(datos.pago, 'es') ? `\n${notaMetodoPago(datos.pago, 'es')}` : '')
+  );
+}
+
+/**
+ * Cierre cuando la orden YA se le mostró al cliente (ronda 11:
+ * la orden va primero y la pregunta del pago después): al
+ * responder el método no se repite toda la orden; se confirma
+ * el pago con su nota (crédito 4% / cheque taxes / Zelle antes
+ * de cargar) y la regla del pago por adelantado. La orden
+ * completa, con «Pago:» y totales, queda en la confirmación
+ * armada para el dueño.
+ */
+function textoCierreTrasOrden(datos, nombre, idioma = 'es') {
+  const n = nombre && nombre !== '' ? ` ${nombre}` : '';
+  if (idioma === 'en') {
+    return (
+      `All set${n}! ✅ Your order is registered with payment by *${pagoDisplay(datos.pago, 'en')}*.` +
+      (notaMetodoPago(datos.pago, 'en') ? `\n${notaMetodoPago(datos.pago, 'en')}` : '') +
+      `\nPayment is in advance: as soon as your payment is confirmed, we load your order. 🚛` +
+      `\nA specialist will help you right here. 🙏`
+    );
+  }
+  return (
+    `¡Listo${n}! ✅ Ya quedó registrada su orden con pago en *${datos.pago}*.` +
+    (notaMetodoPago(datos.pago, 'es') ? `\n${notaMetodoPago(datos.pago, 'es')}` : '') +
+    `\nEl pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛` +
+    `\nUn especialista le atiende por aquí mismo. 🙏`
   );
 }
 
@@ -2885,9 +3044,18 @@ function manejarRangoYardas(conversacion, textoCliente, idioma, intentDetectado)
     intentDetectado,
   });
   const confirmarYSiguiente = () => {
-    guardar();
     const paso = pasoActual(flow);
     const conf = `Perfecto, ${confirmacionDe('yardas', flow.datos, idioma)}.`;
+    if (paso === 'pago' && !flow.ordenMostrada) {
+      // Ronda 11: al completarse la orden, va primero la orden
+      // (con precios) y después la pregunta del pago.
+      flow.ordenMostrada = true;
+      guardar();
+      return decision(
+        `${conf}\n${resumenCliente(flow.datos, flow.datos.nombre || conversacion.name, idioma)}\n${preguntaPara('pago', flow.datos, idioma)}`
+      );
+    }
+    guardar();
     return decision(paso ? `${conf}\n${preguntaPara(paso, flow.datos, idioma)}` : conf);
   };
   const t = ` ${normalizar(textoCliente)} `;
@@ -2945,9 +3113,18 @@ function manejarAclaracionHora(conversacion, textoCliente, idioma, intentDetecta
     intentDetectado,
   });
   const confirmarHoraYSiguiente = () => {
-    guardar();
     const paso = pasoActual(flow);
     const conf = `Perfecto, ${confirmacionDe('hora', flow.datos, idioma)}.`;
+    if (paso === 'pago' && !flow.ordenMostrada) {
+      // Ronda 11: al completarse la orden, va primero la orden
+      // (con precios) y después la pregunta del pago.
+      flow.ordenMostrada = true;
+      guardar();
+      return decision(
+        `${conf}\n${resumenCliente(flow.datos, flow.datos.nombre || conversacion.name, idioma)}\n${preguntaPara('pago', flow.datos, idioma)}`
+      );
+    }
+    guardar();
     return decision(paso ? `${conf}\n${preguntaPara(paso, flow.datos, idioma)}` : conf);
   };
 
@@ -3250,9 +3427,15 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     // Flujo completo: cierre al cliente + confirmación armada.
     const datos = flow.datos;
     const confirmacionArmada = armarConfirmacion(datos, conversacion);
+    // Ronda 11: si la orden ya se le mostró al cliente al
+    // llegar al paso del pago (la orden va primero), el cierre
+    // al responder el método es corto y no repite la orden.
+    const ordenYaMostrada = !!flow.ordenMostrada;
     db.setConversationFlow(conversacion.id, null);
     conversacion.flow = null;
-    const textoResumen = resumenCliente(datos, datos.nombre || conversacion.name, idioma);
+    const textoResumen = ordenYaMostrada
+      ? textoCierreTrasOrden(datos, datos.nombre || conversacion.name, idioma)
+      : resumenCliente(datos, datos.nombre || conversacion.name, idioma);
     return {
       responder: true,
       // Si el pago es en efectivo, el mensaje de la regla va
@@ -3302,6 +3485,42 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const escalado = intentos >= 2;
   db.setConversationFlow(conversacion.id, flow);
   conversacion.flow = flow;
+
+  // ---- LA ORDEN PRIMERO, EL PAGO DESPUÉS (ronda 11, palabra
+  // del dueño 2026-10-31 19:22: «Primero tiene que colocar la
+  // order así y luego pregunta cómo pagará. Y le das las
+  // opciones. Y los precios tú ya los tienes de los mixes»):
+  // en cuanto la orden queda completa y SOLO falta el pago,
+  // el bot coloca primero la orden completa — con los precios
+  // de los mixes de su tabla (las 2 cotizaciones con su total
+  // cada una, taxes incluidos) — y DESPUÉS pregunta cómo va a
+  // pagar, con las opciones. Se muestra una vez (o de nuevo si
+  // el cliente corrige un dato, porque los totales cambian);
+  // al responder el método, el cierre es corto (ver
+  // textoCierreTrasOrden) y la orden armada sale completa.
+  if (paso === 'pago' && !preguntaAclararPago && (!flow.ordenMostrada || corregidos.length > 0)) {
+    flow.ordenMostrada = true;
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+    const partesOrden = [];
+    if (corregidos.length) {
+      partesOrden.push(
+        `${idioma === 'en' ? 'Got it, updated' : 'Perfecto, lo corrijo'}: ${corregidos.map((c) => confirmacionCorreccionDe(c, flow.datos, idioma)).join('; ')}.`
+      );
+    }
+    if (nuevos.length) {
+      partesOrden.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
+    }
+    partesOrden.push(resumenCliente(flow.datos, flow.datos.nombre || conversacion.name, idioma));
+    partesOrden.push(preguntaPara('pago', flow.datos, idioma));
+    return {
+      responder: true,
+      texto: partesOrden.join('\n'),
+      intent: flow.tipo,
+      topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+      intentDetectado,
+    };
+  }
 
   const partes = [];
   if (esNuevo) {
@@ -3652,8 +3871,13 @@ function ultimaOrdenCerrada(conversacion) {
 /** Reescribe el mix en la línea 3 de la confirmación armada,
  * conservando el aire y la pompa tal como quedaron en la orden. */
 function aplicarCambioMixEnConfirmacion(textoArmada, nuevoMix) {
-  const lineas = String(textoArmada || '').split('\n');
+  let lineas = String(textoArmada || '').split('\n');
   if (lineas.length < 3) return null;
+  // Si el mix cambia tras el cierre, los totales de la orden
+  // armada quedan viejos: se quitan las líneas «Total…» para
+  // no dejar un precio que ya no corresponde (el dueño
+  // confirma el precio del mix nuevo) — ronda 11.
+  lineas = lineas.filter((l) => !/^Total\b/.test(l));
   let linea = lineas[2];
   let pompa = null;
   const mPompa = /\s\(([^)]+)\)\s*$/.exec(linea);
