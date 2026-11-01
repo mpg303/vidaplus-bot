@@ -4,7 +4,9 @@
 // Cuando el cliente elige pagar con TARJETA DE CRÉDITO, el bot le
 // envía esta forma AUTOMÁTICAMENTE como documento de WhatsApp
 // (orden de Jesus, 2026-10-21: «quiero que todo sea automático»
-// + la forma aprobada por él el mismo día, con recargo de 3.5%).
+// + la forma aprobada por él el mismo día). El texto impreso del
+// recargo se actualizó de 3.5% a 4% por orden de Jesus
+// (2026-10-31), para que la forma diga lo mismo que cobra el bot.
 //
 // El PDF viaja en el repo como texto base64
 // (backend/assets/forma-autorizacion-tarjeta.b64 — la misma forma
