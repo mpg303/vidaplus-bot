@@ -2787,6 +2787,23 @@ function totalesConRecargoCredito(datos) {
     : { uno: aplicar(tot.uno) };
 }
 
+/**
+ * Monto que va PRE-LLENADO en el campo «amount» de la forma de
+ * autorización de tarjeta (pedido del dueño, 2026-10-31 23:16:
+ * «cuando pidan el monto en la aplicación de tarjeta que
+ * automáticamente se llene con el monto que ya sabemos»): el
+ * total FINAL con el recargo de crédito, SOLO si hay un único
+ * monto calculable. Con las cotizaciones en par (2 mixes sin
+ * elegir) no hay un solo monto y sin total (fuera de Dallas,
+ * pompa sin precio…) tampoco: la forma va sin pre-llenar,
+ * como antes. Null si no aplica.
+ */
+function montoFormaTarjeta(datos) {
+  const tot = totalesConRecargoCredito(datos);
+  if (!tot || !tot.uno) return null;
+  return tot.uno;
+}
+
 /** Bloque «total con tarjeta de crédito» para el cliente (null si no aplica). */
 function bloqueTotalCredito(datos, idioma = 'es') {
   const tot = totalesConRecargoCredito(datos);
@@ -3502,9 +3519,17 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     const ordenYaMostrada = !!flow.ordenMostrada;
     db.setConversationFlow(conversacion.id, null);
     conversacion.flow = null;
-    const textoResumen = ordenYaMostrada
+    let textoResumen = ordenYaMostrada
       ? textoCierreTrasOrden(datos, datos.nombre || conversacion.name, idioma)
       : resumenCliente(datos, datos.nombre || conversacion.name, idioma);
+    // RESEÑA (orden de Jesus, 2026-10-31): con cheque, efectivo,
+    // Zelle o débito, la información de pago ya quedó confirmada
+    // al cerrar la orden de pedido: se anexa la petición de
+    // reseña de 5 estrellas. Con crédito NO va aquí: va cuando
+    // sus documentos quedan completos (manejarDocsTarjeta).
+    if (flow.tipo === 'pedido' && datos.pago !== 'Tarjeta de crédito') {
+      textoResumen += bloqueResenaSiAplica(conversacion, idioma);
+    }
     return {
       responder: true,
       texto: textoResumen,
@@ -3516,6 +3541,9 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       // como documento de WhatsApp y abre la espera de documentos
       // (conv.docsTarjeta). Débito, Zelle y efectivo: sin forma.
       formaTarjeta: datos.pago === 'Tarjeta de crédito',
+      // Monto pre-llenado de la forma (null si no hay un único
+      // total calculable): el webhook lo pasa a formaTarjeta.
+      montoForma: datos.pago === 'Tarjeta de crédito' ? montoFormaTarjeta(datos) : null,
       idiomaForma: idioma,
     };
   }
@@ -3800,10 +3828,64 @@ function responderNoTexto(conversacion, clase) {
 // que es lo que la vigilancia lee para avisar a Jesus
 // «documentos completos».
 // ============================================================
+// Al completarse los documentos, el cliente sabe qué sigue
+// (orden de Jesus, 2026-10-31): comenzaremos a procesar el pago
+// y después de eso podremos cargar su cemento.
 const MENSAJE_DOCS_COMPLETO_ES =
-  'Ya recibí tu forma y tus fotos, está todo completo. Gracias.';
+  'Ya recibí tu forma y tus fotos, está todo completo. Comenzaremos a procesar el pago de tu tarjeta y, en cuanto quede listo, podremos cargar tu cemento. ¡Gracias!';
 const MENSAJE_DOCS_COMPLETO_EN =
-  "I received your form and your photos, everything is complete. Thank you.";
+  "I received your form and your photos, everything is complete. We'll start processing your card payment now, and once it's done, we'll be able to load your concrete. Thank you!";
+
+// ============================================================
+// RESEÑA DE 5 ESTRELLAS (orden de Jesus, 2026-10-31): cuando ya
+// tenemos la información de pago del cliente (la tarjeta con sus
+// documentos completos, o el cheque / efectivo / Zelle confirmado
+// al cerrar la orden), se le pide una reseña de 5 estrellas con
+// el enlace directo a la ficha de Google de JMP. El enlace vive
+// en la variable de entorno LINK_RESENA: SIN enlace configurado
+// NO se pide nada (mismo criterio que la encuesta del paquete
+// local: un enlace real o ninguno). Se pide UNA sola vez por
+// conversación: si el bloque ya salió en un mensaje anterior del
+// bot, no se repite.
+// ============================================================
+function linkResena() {
+  return process.env.LINK_RESENA || '';
+}
+
+/** Bloque de petición de reseña ('' si no hay enlace configurado). */
+function bloqueResena(idioma) {
+  const link = linkResena();
+  if (!link) return '';
+  return idioma === 'en'
+    ? `\n\nCould you help us with a 5-star review? ⭐⭐⭐⭐⭐ It helps us a lot. You can leave it here:\n${link}`
+    : `\n\n¿Nos ayudas con una reseña de 5 estrellas? ⭐⭐⭐⭐⭐ Nos ayuda muchísimo. La puedes dejar aquí:\n${link}`;
+}
+
+/** ¿El bot ya pidió la reseña en esta conversación? */
+function resenaYaPedida(conversacion) {
+  try {
+    const msgs = db.getMessages(conversacion.id, 200) || [];
+    return msgs.some(
+      (m) =>
+        m.sender === 'BOT' &&
+        m.text &&
+        (m.text.includes('reseña de 5 estrellas') || m.text.includes('5-star review'))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bloque de reseña listo para anexar a un texto saliente: vacío
+ * si no hay enlace configurado o si ya se pidió en esta
+ * conversación.
+ */
+function bloqueResenaSiAplica(conversacion, idioma) {
+  if (!linkResena()) return '';
+  if (resenaYaPedida(conversacion)) return '';
+  return bloqueResena(idioma);
+}
 
 /** Texto amable que dice exactamente qué documento falta. */
 function textoDocsFaltantes(docs, idioma) {
@@ -3860,7 +3942,12 @@ function manejarDocsTarjeta(conversacion, clase) {
     db.setNeedsHuman(conversacion.id, true);
     return {
       responder: true,
-      texto: idioma === 'en' ? MENSAJE_DOCS_COMPLETO_EN : MENSAJE_DOCS_COMPLETO_ES,
+      // Documentos completos = ya tenemos la información de la
+      // tarjeta: tras avisar que se procesará el pago, se pide
+      // la reseña de 5 estrellas (si hay enlace configurado).
+      texto:
+        (idioma === 'en' ? MENSAJE_DOCS_COMPLETO_EN : MENSAJE_DOCS_COMPLETO_ES) +
+        bloqueResenaSiAplica(conversacion, idioma),
       intent: 'docs_tarjeta',
       topic: 'sus documentos de tarjeta',
       docsCompletos: true,
@@ -4036,7 +4123,7 @@ function textoListaMetodos(idioma) {
 }
 
 /** Aplica el cambio de forma de pago a la orden ya cerrada. */
-function decisionCambioPago(orden, nuevoPago, idioma) {
+function decisionCambioPago(orden, nuevoPago, idioma, conversacion) {
   const nuevaArmada = aplicarCambioPagoEnConfirmacion(orden.text, nuevoPago);
   const nota = notaMetodoPago(nuevoPago, idioma);
   const decision = {
@@ -4053,9 +4140,24 @@ function decisionCambioPago(orden, nuevoPago, idioma) {
   if (nuevaArmada && nuevaArmada !== orden.text) {
     decision.confirmacionArmada = nuevaArmada;
   }
+  // RESEÑA (orden de Jesus, 2026-10-31): si la orden pasa a
+  // cheque, efectivo, Zelle o débito tras el cierre y la reseña
+  // aún no se pidió, se anexa aquí. Si pasa a crédito, la reseña
+  // va al completarse sus documentos (manejarDocsTarjeta).
+  if (nuevoPago !== 'Tarjeta de crédito' && conversacion) {
+    decision.texto += bloqueResenaSiAplica(conversacion, idioma);
+  }
   // Crédito tras el cierre: el webhook envía la forma de
   // autorización igual que cuando se elige en el flujo.
-  if (nuevoPago === 'Tarjeta de crédito') decision.formaTarjeta = true;
+  if (nuevoPago === 'Tarjeta de crédito') {
+    decision.formaTarjeta = true;
+    // Monto pre-llenado de la forma: sale de la línea «Total
+    // con tarjeta de crédito» de la orden armada ya recalculada
+    // (solo la variante de UN total; con cotizaciones en par
+    // no hay un solo monto y la forma va sin pre-llenar).
+    const mMonto = /Total con tarjeta de crédito \(\+\d+(?:\.\d+)?%\): \$([\d,]+\.\d{2})/.exec(nuevaArmada || '');
+    if (mMonto) decision.montoForma = parseFloat(mMonto[1].replace(/,/g, ''));
+  }
   return decision;
 }
 
@@ -4195,16 +4297,16 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
       esperandoTarjetaPc &&
       (pagoDetectadoPc === 'Tarjeta de débito' || pagoDetectadoPc === 'Tarjeta de crédito')
     ) {
-      return decisionCambioPago(orden, pagoDetectadoPc, idiomaP);
+      return decisionCambioPago(orden, pagoDetectadoPc, idiomaP, conversacion);
     }
     if (esperandoOfertaPago) {
       const mOf = /\*([^*]+)\*/.exec(ultimoBot.text || '');
       const ofrecido = mOf ? extraerPago(mOf[1]) : null;
       if (ofrecido && (afirmativo || pagoDetectadoPc === ofrecido)) {
-        return decisionCambioPago(orden, ofrecido, idiomaP);
+        return decisionCambioPago(orden, ofrecido, idiomaP, conversacion);
       }
       if (pagoDetectadoPc && pagoDetectadoPc !== 'Tarjeta') {
-        return decisionCambioPago(orden, pagoDetectadoPc, idiomaP);
+        return decisionCambioPago(orden, pagoDetectadoPc, idiomaP, conversacion);
       }
       if (pagoDetectadoPc === 'Tarjeta') {
         return decisionPagoSimple(idiomaP === 'en' ? 'Debit or credit?' : '¿Débito o crédito?');
@@ -4234,7 +4336,7 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
         );
       }
       // Cambio directo («mejor por Zelle», «pago con cheque»…).
-      return decisionCambioPago(orden, pagoDetectadoPc, idiomaP);
+      return decisionCambioPago(orden, pagoDetectadoPc, idiomaP, conversacion);
     }
     if (
       /\b(formas? de pago|metodos? de pago|opciones de pago|payment methods|payment options|how (can|do) i pay|como (puedo |se )?paga)/.test(tNorm)

@@ -8,12 +8,24 @@
 //
 // El PDF viaja en el repo como texto base64
 // (backend/assets/forma-autorizacion-tarjeta.b64 — la misma forma
-// aprobada, con el logo reducido: 167 KB en vez de 2.8 MB, texto y
-// campos idénticos) porque el push al repo solo admite archivos de
-// texto. Aquí se decodifica en memoria y se sube a Meta UNA vez;
-// el media_id se cachea en el proceso (Meta lo conserva ~30 días)
-// y si un envío con el id cacheado falla, se re-sube y se
-// reintenta una sola vez.
+// aprobada, con el logo reducido: texto y campos idénticos)
+// porque el push al repo solo admite archivos de texto. Aquí se
+// decodifica en memoria y se sube a Meta UNA vez; el media_id se
+// cachea en el proceso (Meta lo conserva ~30 días) y si un envío
+// con el id cacheado falla, se re-sube y se reintenta una sola vez.
+//
+// LOGO NUEVO (orden de Jesus, 2026-10-31): el asset trae el logo
+// oficial nuevo de JMP (el del camión naranja sobre negro) en el
+// encabezado, colocado sobre el logo anterior sin tocar ningún
+// texto ni campo de la forma aprobada.
+//
+// MONTO PRE-LLENADO (orden de Jesus, 2026-10-31): si la orden ya
+// tiene total final de crédito (total con taxes + 4%), la forma
+// sale con el campo «amount» YA LLENADO con ese monto, para que
+// el cliente no tenga que escribirlo. Esa copia personalizada se
+// genera al momento con pdf-lib y se sube solo para ese envío
+// (sin caché). Si algo falla al generarla, se envía la forma
+// genérica de siempre: el cliente nunca se queda sin su forma.
 // ============================================================
 const fs = require('fs');
 const path = require('path');
@@ -36,6 +48,26 @@ function bufferForma() {
   return bufferCache;
 }
 
+/**
+ * Genera una copia de la forma con el campo «amount» pre-llenado
+ * con el monto dado (formato 9,006.40). Devuelve un Buffer listo
+ * para subir a Meta. Lanza si pdf-lib o el campo no están: el
+ * llamador decide el respaldo (la forma genérica).
+ */
+async function generarFormaConMonto(monto) {
+  const { PDFDocument, StandardFonts } = require('pdf-lib');
+  const doc = await PDFDocument.load(bufferForma());
+  const form = doc.getForm();
+  const texto = Number(monto).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  form.getTextField('amount').setText(texto);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  form.updateFieldAppearances(font);
+  return Buffer.from(await doc.save());
+}
+
 /** Sube la forma a Meta si aún no hay media_id cacheado. */
 async function asegurarMediaId() {
   if (!mediaIdCache) {
@@ -46,9 +78,24 @@ async function asegurarMediaId() {
 
 /**
  * Envía la forma de autorización al cliente como documento de
- * WhatsApp. Devuelve el metaId del mensaje enviado.
+ * WhatsApp. Si `monto` es un número válido mayor que cero, la
+ * forma sale personalizada con ese monto pre-llenado; si no (o si
+ * la personalización falla), se envía la forma genérica.
+ * Devuelve el metaId del mensaje enviado.
  */
-async function enviarFormaTarjeta(waId) {
+async function enviarFormaTarjeta(waId, monto) {
+  if (typeof monto === 'number' && Number.isFinite(monto) && monto > 0) {
+    try {
+      const buffer = await generarFormaConMonto(monto);
+      const mediaId = await uploadMedia(buffer, NOMBRE_ARCHIVO_FORMA, 'application/pdf');
+      return await sendDocument(waId, mediaId, NOMBRE_ARCHIVO_FORMA);
+    } catch (e) {
+      console.error(
+        '[formaTarjeta] no se pudo pre-llenar el monto; se envía la forma genérica:',
+        e && e.message
+      );
+    }
+  }
   const mediaId = await asegurarMediaId();
   try {
     return await sendDocument(waId, mediaId, NOMBRE_ARCHIVO_FORMA);
@@ -73,4 +120,4 @@ function mensajeInstruccionesForma(idioma) {
   return idioma === 'en' ? MENSAJE_FORMA_EN : MENSAJE_FORMA_ES;
 }
 
-module.exports = { enviarFormaTarjeta, mensajeInstruccionesForma, NOMBRE_ARCHIVO_FORMA };
+module.exports = { enviarFormaTarjeta, mensajeInstruccionesForma, NOMBRE_ARCHIVO_FORMA, generarFormaConMonto };

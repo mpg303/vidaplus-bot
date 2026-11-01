@@ -226,11 +226,14 @@ async function procesarMensajeEntrante(msg, nombrePerfil) {
       forma: false,
       fotos: 0,
       idioma: idiomaForma,
+      // Monto que salió pre-llenado en la forma (null si la orden
+      // no tenía un único total de crédito calculable).
+      monto: decision.montoForma || null,
       enviadoAt: new Date().toISOString(),
       completadoAt: null,
     });
     try {
-      const metaIdDoc = await enviarFormaTarjeta(waId);
+      const metaIdDoc = await enviarFormaTarjeta(waId, decision.montoForma);
       db.addMessage({
         conversationId: conv.id,
         waId,
