@@ -1032,32 +1032,96 @@ function esPagoEfectivo(raw) {
 }
 
 /**
+ * ¿La mención de un método que empieza en `idx` va NEGADA?
+ * La negación tiene que ir PEGADA a la mención, solo con el
+ * pegamento verbal típico del pago en medio («no voy a pagar
+ * con cash», «no es cheque», «no con cheque», «not with
+ * cash», «won't pay cash», «en vez de cash», «instead of
+ * cash»…): un «no» lejano que niega OTRA cosa («no
+ * inspection, pago con zelle») NO niega el método.
+ */
+function mencionPagoNegada(t, idx) {
+  const antes = t.slice(Math.max(0, idx - 60), idx);
+  return /(?:\b(?:no|not|never|nunca|tampoco)\b|n['’]t\b|\b(?:en vez de|instead of|rather than)\b)\s*(?:voy a pagar con|voy a pagar|a pagar con|pagar con|pago con|quiero pagar con|paying with|pay with|pagar|pago|quiero|es|era|con|paying|pay|using|use|with|is|was)?\s*$/.test(
+    antes
+  );
+}
+
+/**
+ * Menciones de métodos de pago en el texto normalizado: cada
+ * una con su categoría, su posición y si va negada.
+ * Categorías: «efectivo» (cash/efectivo y las frases de pago
+ * a la entrega), «zelle», «cheque» (\bcheck\b no casa
+ * «checking», solo la palabra suelta), «debito», «credito» y
+ * «tarjeta» (la palabra genérica tarjeta/card).
+ */
+function mencionesPago(t) {
+  const buscar = (regex, categoria) => {
+    const out = [];
+    for (const m of t.matchAll(regex)) {
+      out.push({ categoria, idx: m.index, negada: mencionPagoNegada(t, m.index) });
+    }
+    return out;
+  };
+  return [
+    ...buscar(/\b(cash|efectivo)\b/g, 'efectivo'),
+    ...buscar(
+      /\b(al entregar|a la entrega|cuando lleguen|cuando entreguen|on delivery|upon delivery)\b/g,
+      'efectivo'
+    ),
+    ...buscar(/\bzelle\b/g, 'zelle'),
+    ...buscar(/\b(cheque|check)\b/g, 'cheque'),
+    ...buscar(/\b(debito|debit)\b/g, 'debito'),
+    ...buscar(/\b(credito|credit)\b/g, 'credito'),
+    ...buscar(/\b(tarjeta|card)\b/g, 'tarjeta'),
+  ];
+}
+
+/**
  * Interpreta la respuesta al paso de la FORMA DE PAGO (el último
  * del flujo): «¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta
- * de crédito o efectivo?» (las cuatro opciones del dueño,
+ * de crédito, Zelle o cheque?» (las opciones del dueño,
  * 2026-10-21). Devuelve el valor normalizado — «Zelle», «Tarjeta
  * de débito» o «Tarjeta de crédito» —, o «Tarjeta» a secas si el
  * cliente dijo solo «tarjeta»/«card» sin aclarar (el flujo le
  * pregunta «¿Débito o crédito?» una sola vez), o «Efectivo» si
- * pidió pagar en efectivo, o null si no se entiende ninguna
- * forma de pago.
+ * pidió pagar en efectivo, o «Cheque», o null si no se entiende
+ * ninguna forma de pago.
+ *
+ * RONDA 23 (captura real de Jesus, 2026-11-01): la orden cerró
+ * en efectivo y el cliente corrigió «No me equivoqué no voy a
+ * pagar con cash voy a pagar con Zelle»; la detección vieja
+ * devolvía «Efectivo» porque el cash mandaba por palabra
+ * suelta, sin mirar la negación — el bot «cambió» la orden a
+ * efectivo, exactamente lo contrario de lo pedido. Ahora la
+ * detección es por MENCIONES con posición y negación: gana el
+ * método AFIRMADO mencionado en ÚLTIMO lugar (el negado queda
+ * excluido; entre dos afirmados, el último es la corrección
+ * típica: «me equivoqué, mejor tarjeta de débito»).
  */
 function extraerPago(raw) {
   const t = normalizar(raw);
-  // El efectivo manda sobre las demás palabras: quien dice
-  // «efectivo» (o «cash», «pago cuando lleguen»…) quiere pagar
-  // en efectivo, y se registra solo como «Efectivo».
-  if (esPagoEfectivo(raw)) return PAGO_EFECTIVO;
-  if (/\bzelle\b/.test(t)) return 'Zelle';
-  // Cheque (orden del dueño, 2026-10-31): método aceptado; se
-  // le suman los taxes. \bcheck\b no casa «checking» (cuenta de
-  // cheques/débito), solo la palabra suelta.
-  if (/\b(cheque|check)\b/.test(t)) return PAGO_CHEQUE;
-  const debito = /\b(debito|debit)\b/.test(t);
-  const credito = /\b(credito|credit)\b/.test(t);
-  if (debito && !credito) return 'Tarjeta de débito';
-  if (credito && !debito) return 'Tarjeta de crédito';
-  if (/\b(tarjeta|card)\b/.test(t)) return 'Tarjeta';
+  const menciones = mencionesPago(t);
+  const especificas = menciones.filter((m) => m.categoria !== 'tarjeta' && !m.negada);
+  if (especificas.length) {
+    const ganadora = especificas.reduce((a, b) => (b.idx >= a.idx ? b : a));
+    switch (ganadora.categoria) {
+      case 'efectivo':
+        return PAGO_EFECTIVO;
+      case 'zelle':
+        return 'Zelle';
+      case 'cheque':
+        return PAGO_CHEQUE;
+      case 'debito':
+        return 'Tarjeta de débito';
+      case 'credito':
+        return 'Tarjeta de crédito';
+    }
+  }
+  // Sin método específico afirmado: la palabra genérica
+  // «tarjeta»/«card» (si no va negada) deja el método en
+  // «Tarjeta» y el flujo pregunta «¿Débito o crédito?».
+  if (menciones.some((m) => m.categoria === 'tarjeta' && !m.negada)) return 'Tarjeta';
   return null;
 }
 
