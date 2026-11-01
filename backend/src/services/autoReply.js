@@ -633,6 +633,7 @@ function datosVacios() {
     pompa: null, // null = aún no se preguntó · 'pendiente' = dijo que sí ocupa y falta que elija · 'Sin pompa' = dijo que no · 'Boom pump' | 'Small line / Trailer pump' (small line y trailer son la misma) — se pregunta tras el aire (regla del dueño, 2026-10-30)
     direccion: null,
     fecha: null, // texto tal como lo dio el cliente («mañana», «10/20/26»…)
+    domingoEspecial: false, // el día pedido es DOMINGO: posible cliente especial (regla del dueño, 2026-10-31; subida el 2026-11-01) — la marca viaja en la orden para que el dueño lo vea
     hora: null, // texto tal como lo dio el cliente («7 am», «10:00 pm»…)
     slump: null,
     inspeccion: false,
@@ -2661,6 +2662,69 @@ function fechaCortaEntrega(fechaTexto) {
   return fmt(base); // no se pudo interpretar: se deja la fecha de hoy
 }
 
+/** Resuelve el texto de fecha a ms UTC, con las mismas reglas
+ * de fechaCortaEntrega. Devuelve null si no se puede interpretar
+ * (fechaCortaEntrega en ese caso cae a «hoy»; aquí NO se inventa
+ * el día: sin resolución no hay marca de domingo). */
+function resolverFechaMs(fechaTexto) {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: NEGOCIO.zonaHoraria,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const Y = +partes.find((p) => p.type === 'year').value;
+  const M = +partes.find((p) => p.type === 'month').value;
+  const D = +partes.find((p) => p.type === 'day').value;
+  const base = Date.UTC(Y, M - 1, D);
+  const t = normalizar(fechaTexto || '');
+
+  const mNum = t.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+  if (mNum) {
+    const yy = mNum[3] ? (mNum[3].length === 4 ? +mNum[3] : 2000 + +mNum[3]) : Y;
+    return Date.UTC(yy, +mNum[1] - 1, +mNum[2]);
+  }
+  if (/pasado manana/.test(t)) return base + 2 * 86400000;
+  if (/\bmanana\b/.test(t) || /\btomorrow\b/.test(t)) return base + 86400000;
+  if (/\bhoy\b/.test(t) || /\btoday\b/.test(t)) return base;
+
+  const dias = {
+    domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6,
+    sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+  };
+  for (const [nombreDia, num] of Object.entries(dias)) {
+    if (new RegExp(`\\b${nombreDia}\\b`).test(t)) {
+      const hoyDia = new Date(base).getUTCDay();
+      return base + ((num - hoyDia + 7) % 7) * 86400000;
+    }
+  }
+  const meses = {
+    enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
+    julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+    january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+    july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
+  };
+  const mMes = t.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/);
+  if (mMes) {
+    let ms = Date.UTC(Y, meses[mMes[2]], +mMes[1]);
+    if (ms < base) ms = Date.UTC(Y + 1, meses[mMes[2]], +mMes[1]);
+    return ms;
+  }
+  const mMesEN = t.match(/(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})/);
+  if (mMesEN) {
+    let ms = Date.UTC(Y, meses[mMesEN[1]], +mMesEN[2]);
+    if (ms < base) ms = Date.UTC(Y + 1, meses[mMesEN[1]], +mMesEN[2]);
+    return ms;
+  }
+  return null;
+}
+
+/** ¿El día pedido (texto tal como lo dio el cliente) es domingo? */
+function fechaEsDomingo(fechaTexto) {
+  const ms = resolverFechaMs(fechaTexto);
+  return ms !== null && new Date(ms).getUTCDay() === 0;
+}
+
 /**
  * PRECIOS DE LOS MIXES (dictados por el dueño, 2026-10-31
  * 15:36–15:42, por yarda, SOLO DALLAS): Jesus los dictó para
@@ -2896,6 +2960,12 @@ function armarConfirmacion(datos, conversacion) {
   if (!direccionEsDallas(datos.direccion)) {
     lineas.push('⚠ Fuera de Dallas: el precio lo confirma Jesus');
   }
+  // Marca de DOMINGO (regla del dueño, 2026-10-31): si el día
+  // pedido es domingo, la orden que se le pasa al dueño lo dice
+  // claro — es un posible cliente especial por revisar con él.
+  if (datos.domingoEspecial) {
+    lineas.push('⚠ DOMINGO: posible cliente especial — revisar con el cliente');
+  }
   // Nota del cliente (ej. el reparto de la tirada en varios
   // días, «tirar en 2 días, 50 y 50»): va al final de la orden
   // para que el dueño la vea tal como el cliente la pidió.
@@ -3099,6 +3169,29 @@ function textoPlantaCerrada7am(idioma) {
     : 'A esa hora la planta ya está cerrada 🏭 Se la puedo colocar a las *7 am del día siguiente*. ¿Le sirve?';
 }
 
+/**
+ * REGLA DE DOMINGOS (orden del dueño, 2026-10-31; subida a
+ * producción el 2026-11-01): los domingos generalmente NO se
+ * trabaja; la única excepción es un cliente especial. Si el
+ * cliente pide el trabajo para un domingo, el bot no lo rechaza
+ * ni cierra la orden como normal: avisa la regla, le pasa el
+ * caso al equipo (needsHuman, la vigilancia avisa a Jesus) y el
+ * domingo queda registrado con su marca (datos.domingoEspecial
+ * y línea en la orden armada). Si la hora de ese domingo pasa
+ * de las 5:00 PM, se avisa además que las plantas cierran.
+ */
+function textoDomingo(idioma) {
+  return idioma === 'en'
+    ? "We generally don't work on Sundays. We only make exceptions for special clients, so I'll pass your case to our team to review it with you."
+    : 'Los domingos generalmente no trabajamos. Solo hacemos excepciones para clientes especiales, así que le paso su caso a nuestro equipo para que lo revise con usted.';
+}
+
+function textoDomingoTarde(idioma) {
+  return idioma === 'en'
+    ? "Also, the plants generally close after 5:00 PM, so that time isn't possible; our team will review it with you."
+    : 'Además, las plantas generalmente cierran después de las 5:00 PM, así que esa hora no se puede; nuestro equipo lo revisa con usted.';
+}
+
 function textoPreguntaRangoYardas(rango, idioma) {
   return idioma === 'en'
     ? `Is it *${rango.bajo}* or *${rango.alto}* yards?`
@@ -3267,6 +3360,21 @@ function manejarAclaracionHora(conversacion, textoCliente, idioma, intentDetecta
       const mins = horaAMinutos(horaTexto);
       flow.horaPendiente = null;
       if (mins !== null && mins > 17 * 60) {
+        // DOMINGO con la hora ya aclarada tarde (regla de
+        // domingos): NO se ofrece moverla al día siguiente; la
+        // hora queda anotada tal cual, el caso queda marcado
+        // como domingo especial para el equipo y se avisa que
+        // las plantas cierran después de las 5:00 PM.
+        if (fechaEsDomingo(flow.datos.fecha)) {
+          flow.datos.hora = horaTexto;
+          flow.datos.domingoEspecial = true;
+          flow.domingoAvisado = true;
+          flow.domingoHoraAvisado = true;
+          db.setNeedsHuman(conversacion.id, true);
+          conversacion.needsHuman = true;
+          guardar();
+          return decision(textoDomingoTarde(idioma));
+        }
         // Después de las 5:00 pm la planta está cerrada: se
         // ofrece la opción de las 7 am del día siguiente.
         flow.esperaAceptacion7am = { original: horaTexto };
@@ -3467,6 +3575,87 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     } else {
       flow.pagoAclaracionPedida = true;
       preguntaAclararPago = true;
+    }
+  }
+
+  // REGLA DE DOMINGOS (orden del dueño, 2026-10-31; subida a
+  // producción el 2026-11-01): si el día pedido es DOMINGO, el
+  // bot no sigue el flujo como un día normal ni cierra la
+  // orden en este turno: avisa que los domingos generalmente
+  // no se trabaja y que solo hay excepciones para clientes
+  // especiales, marca el caso para atención humana (needsHuman:
+  // la vigilancia avisa a Jesus) y el domingo QUEDA registrado
+  // en los datos con su marca (datos.domingoEspecial). El aviso
+  // sale UNA vez (flags del flujo); si la hora de ese domingo
+  // pasa de las 5:00 PM (las plantas cierran después de esa
+  // hora), sale además el aviso de la hora, también una sola
+  // vez. Si el cliente cambia el día a uno que no sea domingo,
+  // las marcas se limpian y el flujo sigue normal.
+  {
+    const esDomingo = fechaEsDomingo(flow.datos.fecha);
+    if (!esDomingo && (flow.domingoAvisado || flow.datos.domingoEspecial)) {
+      flow.domingoAvisado = false;
+      flow.domingoHoraAvisado = false;
+      flow.datos.domingoEspecial = false;
+    }
+    if (esDomingo) {
+      // La hora tardía puede venir anotada tal cual (volcado en
+      // otro paso) o recién detectada con la planta cerrada en
+      // este mismo turno (esperaAceptacion7am): en ese caso la
+      // hora SÍ queda anotada como la pidió el cliente, porque
+      // el caso lo revisa el equipo con él — no se le mueve
+      // sola al día siguiente.
+      let tardeDomingo = false;
+      const minsDomingo = horaAMinutos(flow.datos.hora);
+      if (minsDomingo !== null && minsDomingo > 17 * 60) tardeDomingo = true;
+      if (flow.esperaAceptacion7am) {
+        const minsOferta = horaAMinutos(flow.esperaAceptacion7am.original);
+        if (minsOferta !== null && minsOferta > 17 * 60) {
+          tardeDomingo = true;
+          flow.datos.hora = flow.esperaAceptacion7am.original;
+          flow.esperaAceptacion7am = null;
+          oferta7am = false;
+          if (!nuevos.includes('hora') && !corregidos.includes('hora')) nuevos.push('hora');
+        }
+      }
+      if (!flow.domingoAvisado || (tardeDomingo && !flow.domingoHoraAvisado)) {
+        const primerAviso = !flow.domingoAvisado;
+        flow.domingoAvisado = true;
+        if (tardeDomingo) flow.domingoHoraAvisado = true;
+        flow.datos.domingoEspecial = true;
+        db.setConversationFlow(conversacion.id, flow);
+        conversacion.flow = flow;
+        db.setNeedsHuman(conversacion.id, true);
+        conversacion.needsHuman = true;
+        const partesDomingo = [];
+        if (corregidos.length) {
+          partesDomingo.push(
+            `${idioma === 'en' ? 'Got it, updated' : 'Perfecto, lo corrijo'}: ${corregidos.map((c) => confirmacionCorreccionDe(c, flow.datos, idioma)).join('; ')}.`
+          );
+        }
+        if (nuevos.length) {
+          partesDomingo.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
+        }
+        if (primerAviso) {
+          partesDomingo.push(textoDomingo(idioma));
+        }
+        if (tardeDomingo) {
+          partesDomingo.push(textoDomingoTarde(idioma));
+        }
+        if (flow.horaPendiente) {
+          // La hora de ese domingo quedó sin calificar: la
+          // aclaración am/pm se pregunta junto con el aviso.
+          partesDomingo.push(textoPreguntaAmPm(idioma));
+        }
+        return {
+          responder: true,
+          texto: partesDomingo.join('\n'),
+          intent: flow.tipo,
+          topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+          intentDetectado,
+          domingoEspecial: true,
+        };
+      }
     }
   }
 
@@ -4713,6 +4902,7 @@ module.exports = {
   extraerDatos,
   armarConfirmacion,
   fechaCortaEntrega,
+  fechaEsDomingo,
   esPreguntaPrecio,
   preguntaSobreAire,
   recomendacionAire,
