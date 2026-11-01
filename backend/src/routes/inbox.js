@@ -10,6 +10,8 @@
 //   POST   /api/send                        { to, text } → ESPECIALISTA (crea la conversación si no existe)
 //   POST   /api/conversations/:id/pause     { paused: true|false }
 //   POST   /api/conversations/:id/survey    { via, templateName? }
+// Órdenes:
+//   GET    /api/orders                      (registro permanente de órdenes listas)
 // Campañas:
 //   GET    /api/campaigns
 //   POST   /api/campaigns                   { name, templateName, language?, recipients[], components? }
@@ -166,6 +168,13 @@ router.get('/campaigns/:id', (req, res) => {
 router.post('/campaigns/:id/cancel', (req, res) => {
   campaign.cancelar(req.params.id);
   res.json({ ok: true });
+});
+
+// ---- Órdenes (registro permanente, pestaña «Órdenes» del panel) ----
+// Una entrada por orden completada (db.orders): el bot la guarda
+// al cerrar la orden y la actualiza con los cambios post-cierre.
+router.get('/orders', (req, res) => {
+  res.json(db.listOrders());
 });
 
 // ---- Respuestas automáticas editables (editor del panel) ----

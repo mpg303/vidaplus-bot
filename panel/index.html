@@ -28,6 +28,7 @@
     <div class="topbar-title"><video class="topbar-video" src="logo-animado-negro.mp4" poster="logo-poster-negro.png" autoplay muted loop playsinline aria-label="JMP Concrete and Dispatch LLC"></video> JMP Concrete and Dispatch <span class="tag">WhatsApp</span></div>
     <nav class="tabs">
       <button class="tab active" data-tab="inbox">📥 Bandeja</button>
+      <button class="tab" data-tab="orders">🧾 Órdenes</button>
       <button class="tab" data-tab="campaigns">📣 Campañas</button>
       <button class="tab" data-tab="replies">✏️ Respuestas</button>
       <button id="logout-btn" class="tab logout">Salir</button>
@@ -61,6 +62,24 @@
         </div>
       </div>
     </main>
+  </section>
+
+  <!-- ===== Órdenes (registro permanente) ===== -->
+  <section id="tab-orders" class="tabpane hidden">
+    <div class="orders-wrap">
+      <h2>Registro de órdenes</h2>
+      <p class="hint">Aquí quedan guardadas las <strong>órdenes listas</strong> que cierra el bot, con su fecha y su cliente. Toque una orden para ver el detalle completo tal como quedó armada.</p>
+      <div class="orders-filters">
+        <label>Buscar por cliente
+          <input id="ord-q" type="text" placeholder="Nombre, compañía o teléfono">
+        </label>
+        <label>Fecha de la orden
+          <input id="ord-fecha" type="date">
+        </label>
+        <button id="ord-refresh" class="btn-small" type="button">🔄 Actualizar</button>
+      </div>
+      <div id="orders-list"></div>
+    </div>
   </section>
 
   <!-- ===== Campañas ===== -->

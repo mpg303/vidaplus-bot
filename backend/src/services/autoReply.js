@@ -3040,6 +3040,52 @@ function armarConfirmacion(datos, conversacion) {
   return lineas.join('\n');
 }
 
+/**
+ * Entrada del REGISTRO PERMANENTE DE ÓRDENES (pestaña «Órdenes»
+ * del panel) para una orden que se acaba de completar: se arma
+ * con los datos estructurados del flujo en el punto único de
+ * completado (ver manejarFlujo) y se guarda con db.registrarOrden.
+ * Los totales van como texto ya formateado ($), igual que salen
+ * en la confirmación armada.
+ */
+function entradaRegistroOrden(conversacion, datos, confirmacionArmada) {
+  const tot = totalesCotizacion(datos);
+  const totC = totalesConRecargoCredito(datos);
+  const fmt = (n) => '$' + formatearDinero(n);
+  const lineas = String(confirmacionArmada || '').split('\n');
+  return {
+    conversationId: conversacion.id,
+    waId: conversacion.waId || null,
+    telefono: conversacion.waId || null,
+    numeroOrden: datos.numeroOrden,
+    cliente: datos.nombre || conversacion.name || null,
+    compania: datos.compania || null,
+    yardas: datos.yardas ? String(datos.yardas.cantidad) : null,
+    plus: !!(datos.yardas && datos.yardas.plus),
+    mix: datos.mix || null,
+    cotizaciones:
+      datos.mixesCotizacion && datos.mixesCotizacion.length
+        ? datos.mixesCotizacion.slice()
+        : null,
+    mixTexto: lineas[2] || null,
+    aire: datos.aire || null,
+    pompa: datos.pompa || null,
+    direccion: datos.direccion || null,
+    fecha: datos.fecha || null,
+    fechaCorta: fechaCortaEntrega(datos.fecha),
+    hora: datos.hora || null,
+    pago: datos.pago || null,
+    total: tot && tot.uno != null ? fmt(tot.uno) : null,
+    totalesPorMix:
+      tot && tot.par ? tot.par.map((p) => ({ mix: p.mix, total: fmt(p.total) })) : null,
+    totalCredito: totC && totC.uno != null ? fmt(totC.uno) : null,
+    totalesCreditoPorMix:
+      totC && totC.par ? totC.par.map((p) => ({ mix: p.mix, total: fmt(p.total) })) : null,
+    domingoEspecial: !!datos.domingoEspecial,
+    confirmacionArmada,
+  };
+}
+
 /** Cierre corto al cliente cuando el flujo queda completo. */
 function resumenCliente(datos, nombre, idioma = 'es') {
   const n = nombre && nombre !== '' ? ` ${nombre}` : '';
@@ -3785,6 +3831,15 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       } catch {}
     }
     const confirmacionArmada = armarConfirmacion(datos, conversacion);
+    // REGISTRO PERMANENTE DE ÓRDENES (pestaña «Órdenes» del
+    // panel, orden del dueño 2026-11-01): la orden lista queda
+    // guardada en el registro en ESTE punto — el único donde una
+    // orden se completa — con su número, fecha, cliente y total.
+    // Los cambios post-cierre la actualizan sin duplicarla (ver
+    // decidirRespuesta).
+    try {
+      db.registrarOrden(entradaRegistroOrden(conversacion, datos, confirmacionArmada));
+    } catch {}
     // Ronda 11: si la orden ya se le mostró al cliente al
     // llegar al paso del pago (la orden va primero), el cierre
     // al responder el método es corto y no repite la orden.
@@ -5578,6 +5633,17 @@ const LINEA_DESPERTAR_EN =
 function decidirRespuesta(conversacion, textoCliente, tipoMensaje = 'text') {
   const ctx = { desperto: false, idioma: null };
   const d = decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje, ctx);
+  // REGISTRO DE ÓRDENES — cambios POST-CIERRE: toda decisión
+  // post-cierre que regenera la confirmación armada (cambio de
+  // mix, de pago, elección del mix inicial…) ACTUALIZA la entrada
+  // del registro de esa orden derivando los campos de la armada
+  // nueva; nunca crea una segunda entrada (db.registrarOrden
+  // hace upsert por conversación + número de orden).
+  if (d && d.confirmacionArmada && d.intent === 'postcierre') {
+    try {
+      db.actualizarOrdenDesdeArmada(conversacion.id, conversacion.waId, d.confirmacionArmada);
+    } catch {}
+  }
   // Las respuestas post-cierre de una orden (sinPrefijoDespertar)
   // NUNCA llevan la frase de retomada: tras el cierre el
   // especialista sí está atendiendo la orden y la frase no viene

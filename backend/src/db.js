@@ -41,6 +41,8 @@ function vacia() {
     sessions: [],      // { token, createdAt, expiresAt }
     replies: {},       // respuestas editadas desde el panel: { intentId: { text?, keywords?, updatedAt } }
     contadorOrdenes: 0, // correlativo del número de orden NUESTRO que el bot emite al completarse cada orden (orden del dueño, 2026-11-01)
+    orders: [],        // REGISTRO PERMANENTE de órdenes listas (pestaña «Órdenes» del panel, orden del dueño 2026-11-01):
+                       // una entrada por orden completada, clave (conversationId, numeroOrden); ver registrarOrden.
   };
 }
 
@@ -61,6 +63,7 @@ function load() {
     cache = vacia();
   }
   if (!cache.replies) cache.replies = {}; // bases creadas antes del editor de respuestas
+  if (!Array.isArray(cache.orders)) cache.orders = []; // bases creadas antes del registro de órdenes
   return cache;
 }
 
@@ -178,6 +181,7 @@ async function hydrate() {
     if (remote) {
       cache = Object.assign(vacia(), remote);
       if (!cache.replies) cache.replies = {};
+      if (!Array.isArray(cache.orders)) cache.orders = [];
       saveLocal();
       console.log('[db] Supabase: estado cargado desde la base permanente.');
     } else {
@@ -377,6 +381,200 @@ function siguienteNumeroOrden() {
   return d.contadorOrdenes;
 }
 
+// ---------------- Registro permanente de órdenes ----------------
+// Pestaña «Órdenes» del panel (orden del dueño, 2026-11-01:
+// «haz en el panel del bot una pestaña de órdenes y allí la vas
+// guardando cuando una order esté lista… es para tener un
+// registro de fecha y cliente»).
+//
+// - Al COMPLETARSE una orden, autoReply llama registrarOrden()
+//   con los datos estructurados del flujo (clave: conversationId
+//   + numeroOrden).
+// - Los cambios POST-CIERRE (mix, pago, mix inicial…) regeneran
+//   la confirmación armada: actualizarOrdenDesdeArmada() vuelve a
+//   derivar los campos desde ese texto y ACTUALIZA la misma
+//   entrada — jamás crea otra.
+// - listOrders() además RECONSTRUYE las entradas que falten
+//   desde las confirmaciones armadas ya guardadas en las
+//   conversaciones (órdenes cerradas antes de que existiera el
+//   registro, p. ej. la #1): la última armada de cada número
+//   manda, y la fecha de registro es la del mensaje de la armada.
+
+/** Deriva los campos del registro desde el texto de una confirmación armada. */
+function parsearArmadaOrden(texto) {
+  const lineas = String(texto || '').split('\n');
+  if (lineas.length < 7) return null;
+  const mNum = /^Order number: (\d+)$/.exec(lineas[6] || '');
+  if (!mNum) return null;
+  const out = {
+    numeroOrden: parseInt(mNum[1], 10),
+    fechaCorta: null,
+    cliente: null,
+    compania: null,
+    yardas: null,
+    plus: false,
+    mixTexto: lineas[2] || null,
+    cotizaciones: null,
+    direccion: lineas[3] || null,
+    hora: null,
+    pago: null,
+    total: null,
+    totalesPorMix: null,
+    totalCredito: null,
+    totalesCreditoPorMix: null,
+    totalesLineas: [],
+    domingoEspecial: false,
+  };
+  // Línea 1: «M/D/AA Nombre / Compañía»
+  const m1 = /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(.+)$/.exec(lineas[0] || '');
+  if (m1) {
+    out.fechaCorta = m1[1];
+    const resto = m1[2];
+    const idx = resto.lastIndexOf(' / ');
+    if (idx >= 0) {
+      out.cliente = resto.slice(0, idx);
+      out.compania = resto.slice(idx + 3) || null;
+    } else {
+      out.cliente = resto;
+    }
+  }
+  // Línea 2: «50 yds plus»
+  const m2 = /^([\d.,]+) yds( plus)?/.exec(lineas[1] || '');
+  if (m2) {
+    out.yardas = m2[1];
+    out.plus = !!m2[2];
+  }
+  // Cotizaciones en par, si la línea del mix las trae.
+  if (/\(\d+ cotizaciones\)|\(\d+ quotes\)/.test(lineas[2] || '')) {
+    out.cotizaciones = (lineas[2].match(/\d{3,4} psi/g) || []).slice();
+  }
+  // Línea 5: «7 am jobsite»
+  const m5 = /^(.+?)\s+jobsite$/.exec(lineas[4] || '');
+  if (m5) out.hora = m5[1];
+  // Resto de líneas: pago, totales y marcas.
+  const porMix = [];
+  const porMixCredito = [];
+  for (const l of lineas.slice(7)) {
+    let m;
+    if ((m = /^Pago: (.+)$/.exec(l))) {
+      out.pago = m[1];
+    } else if (/^Total\b/.test(l)) {
+      out.totalesLineas.push(l);
+      if ((m = /^Total con tarjeta de crédito.*?(\d{3,4} psi): \$([\d,]+(?:\.\d{2})?)$/.exec(l))) {
+        porMixCredito.push({ mix: m[1], total: '$' + m[2] });
+      } else if ((m = /^Total con tarjeta de crédito.*?: \$([\d,]+(?:\.\d{2})?)$/.exec(l))) {
+        out.totalCredito = '$' + m[1];
+      } else if ((m = /^Total: \$([\d,]+(?:\.\d{2})?)$/.exec(l))) {
+        out.total = '$' + m[1];
+      } else if ((m = /^Total (.+): \$([\d,]+(?:\.\d{2})?)$/.exec(l))) {
+        porMix.push({ mix: m[1], total: '$' + m[2] });
+      }
+    } else if (/^⚠ DOMINGO/.test(l)) {
+      out.domingoEspecial = true;
+    }
+  }
+  if (porMix.length) out.totalesPorMix = porMix;
+  if (porMixCredito.length) out.totalesCreditoPorMix = porMixCredito;
+  return out;
+}
+
+/**
+ * Guarda o ACTUALIZA la entrada del registro de una orden
+ * (clave: conversationId + numeroOrden). La primera vez fija
+ * creadaEn; las siguientes solo refrescan campos y actualizadaEn.
+ * Devuelve la entrada.
+ */
+function registrarOrden(entrada) {
+  if (!entrada || entrada.numeroOrden == null || !entrada.conversationId) return null;
+  const d = load();
+  if (!Array.isArray(d.orders)) d.orders = [];
+  const ahora = ahoraIso();
+  const i = d.orders.findIndex(
+    (o) => o.conversationId === entrada.conversationId && o.numeroOrden === entrada.numeroOrden
+  );
+  if (i >= 0) {
+    const prev = d.orders[i];
+    d.orders[i] = { ...prev, ...entrada, creadaEn: prev.creadaEn || entrada.creadaEn || ahora, actualizadaEn: ahora };
+    save();
+    return d.orders[i];
+  }
+  const nueva = { ...entrada, creadaEn: entrada.creadaEn || ahora, actualizadaEn: ahora };
+  d.orders.push(nueva);
+  save();
+  return nueva;
+}
+
+/**
+ * Actualiza la entrada de una orden desde su confirmación armada
+ * NUEVA (cambios post-cierre). Si la entrada no existía (orden
+ * cerrada antes del registro), la crea con lo derivable del texto.
+ */
+function actualizarOrdenDesdeArmada(conversationId, waId, textoArmada) {
+  const p = parsearArmadaOrden(textoArmada);
+  if (!p) return null;
+  return registrarOrden({
+    conversationId,
+    waId: waId || null,
+    telefono: waId || null,
+    ...p,
+    confirmacionArmada: String(textoArmada || ''),
+  });
+}
+
+/**
+ * Reconstruye en el registro las órdenes ya cerradas que aún no
+ * tengan entrada, desde las confirmaciones armadas guardadas en
+ * las conversaciones (la ÚLTIMA armada de cada número manda).
+ * Devuelve cuántas entradas creó.
+ */
+function reconstruirOrdenesFaltantes() {
+  const d = load();
+  if (!Array.isArray(d.orders)) d.orders = [];
+  const claves = new Set(d.orders.map((o) => `${o.conversationId}|${o.numeroOrden}`));
+  const ultimas = new Map(); // convId|numero -> mensaje armada más reciente
+  for (const c of d.conversations) {
+    const msgs = d.messages.filter(
+      (m) => m.conversationId === c.id && m.sender === 'BOT' && m.flags && m.flags.tipo === 'confirmacion_armada'
+    );
+    for (const m of msgs) {
+      const p = parsearArmadaOrden(m.text);
+      if (!p) continue;
+      const clave = `${c.id}|${p.numeroOrden}`;
+      const prev = ultimas.get(clave);
+      if (!prev || (m.timestamp || '') >= (prev.m.timestamp || '')) {
+        ultimas.set(clave, { m, p, conv: c });
+      }
+    }
+  }
+  let creadas = 0;
+  for (const [clave, { m, p, conv }] of ultimas) {
+    if (claves.has(clave)) continue;
+    d.orders.push({
+      conversationId: conv.id,
+      waId: conv.waId || null,
+      telefono: conv.waId || null,
+      ...p,
+      confirmacionArmada: m.text || '',
+      creadaEn: m.timestamp || ahoraIso(),
+      actualizadaEn: m.timestamp || ahoraIso(),
+    });
+    creadas++;
+  }
+  if (creadas) save();
+  return creadas;
+}
+
+/** Lista del registro para el panel: la más reciente primero. */
+function listOrders() {
+  reconstruirOrdenesFaltantes();
+  return load()
+    .orders.slice()
+    .sort((a, b) =>
+      (b.creadaEn || '').localeCompare(a.creadaEn || '') ||
+      (b.numeroOrden || 0) - (a.numeroOrden || 0)
+    );
+}
+
 function updateMessageStatus(metaId, status, errors) {
   const db = load();
   const m = db.messages.find((x) => x.metaId === metaId);
@@ -574,6 +772,10 @@ module.exports = {
   setConversationFlow,
   setDocsTarjeta,
   siguienteNumeroOrden,
+  registrarOrden,
+  actualizarOrdenDesdeArmada,
+  listOrders,
+  parsearArmadaOrden,
   updateMessageStatus,
   scheduleFollowup,
   cancelFollowups,

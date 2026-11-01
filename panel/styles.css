@@ -283,3 +283,14 @@ body {
   .replies-wrap { padding: 12px; }
   .login-card { padding: 1.5rem 1.2rem; }
 }
+
+/* ===== Registro de órdenes ===== */
+#tab-orders { overflow-y: auto; }
+.orders-wrap { max-width: 860px; margin: 0 auto; padding: 16px; }
+.orders-wrap h2 { margin-top: 0; color: var(--azul); }
+.orders-filters { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; margin: 1rem 0; }
+.orders-filters label { display: block; font-size: .9rem; font-weight: 600; }
+.orders-filters input { display: block; margin-top: .2rem; border: 1px solid #d5dce6; border-radius: 8px; padding: .55rem .6rem; font-size: 1rem; }
+.orders-day { margin: 1.2rem 0 .6rem; color: var(--azul); text-transform: capitalize; }
+.order-card .camp-stats { flex-wrap: wrap; }
+.order-detail { white-space: pre-wrap; word-break: break-word; background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1rem; margin: .8rem 0 0; font-size: .9rem; }

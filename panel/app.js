@@ -81,8 +81,10 @@ document.querySelectorAll('.tab[data-tab]').forEach((btn) => {
     document.querySelectorAll('.tab[data-tab]').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('tab-inbox').classList.toggle('hidden', btn.dataset.tab !== 'inbox');
+    document.getElementById('tab-orders').classList.toggle('hidden', btn.dataset.tab !== 'orders');
     document.getElementById('tab-campaigns').classList.toggle('hidden', btn.dataset.tab !== 'campaigns');
     document.getElementById('tab-replies').classList.toggle('hidden', btn.dataset.tab !== 'replies');
+    if (btn.dataset.tab === 'orders') cargarOrdenes();
     if (btn.dataset.tab === 'campaigns') cargarCampanas();
     if (btn.dataset.tab === 'replies') cargarRespuestas();
   });
@@ -367,6 +369,122 @@ async function restablecerRespuesta(id) {
     alert('Error: ' + e.message);
   }
 }
+
+// ---------------- Órdenes (registro permanente) ----------------
+// El bot guarda cada orden cuando queda lista (backend: registro
+// db.orders, GET /api/orders). Aquí se consulta por FECHA y por
+// CLIENTE: la lista viene de la más reciente a la más vieja y se
+// agrupa por el día en que la orden quedó registrada.
+let ordenesCache = [];
+
+function fechaLocalISO(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function tituloDiaOrden(iso) {
+  const f = fechaLocalISO(iso);
+  const hoy = fechaLocalISO(new Date().toISOString());
+  const ayer = fechaLocalISO(new Date(Date.now() - 24 * 3600 * 1000).toISOString());
+  if (f === hoy) return 'Hoy';
+  if (f === ayer) return 'Ayer';
+  const d = new Date(iso);
+  return isNaN(d)
+    ? 'Sin fecha'
+    : d.toLocaleDateString('es-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+function totalesTextoOrden(o) {
+  const partes = [];
+  if (o.totalesPorMix && o.totalesPorMix.length) {
+    for (const t of o.totalesPorMix) partes.push(`${esc(t.mix)}: <b>${esc(t.total)}</b>`);
+  } else if (o.total) {
+    partes.push(`Total: <b>${esc(o.total)}</b>`);
+  }
+  if (o.totalesCreditoPorMix && o.totalesCreditoPorMix.length) {
+    for (const t of o.totalesCreditoPorMix) partes.push(`Crédito ${esc(t.mix)}: <b>${esc(t.total)}</b>`);
+  } else if (o.totalCredito) {
+    partes.push(`Total con crédito: <b>${esc(o.totalCredito)}</b>`);
+  }
+  return partes.join(' · ');
+}
+
+async function cargarOrdenes() {
+  const box = document.getElementById('orders-list');
+  try {
+    ordenesCache = await api('/api/orders');
+    pintarOrdenes();
+  } catch (e) {
+    box.innerHTML = '<p class="error">No se pudieron cargar las órdenes: ' + esc(e.message) + '</p>';
+  }
+}
+
+function pintarOrdenes() {
+  const box = document.getElementById('orders-list');
+  const q = (document.getElementById('ord-q').value || '').trim().toLowerCase();
+  const fecha = document.getElementById('ord-fecha').value || '';
+  const lista = ordenesCache.filter((o) => {
+    if (fecha && fechaLocalISO(o.creadaEn) !== fecha) return false;
+    if (q) {
+      const texto = [o.cliente, o.compania, o.telefono, o.waId, o.numeroOrden]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!texto.includes(q)) return false;
+    }
+    return true;
+  });
+  if (!lista.length) {
+    box.innerHTML = ordenesCache.length
+      ? '<p class="hint">Ninguna orden coincide con ese filtro.</p>'
+      : '<p class="hint">Aún no hay órdenes registradas. Cuando el bot cierre una orden, aparecerá aquí automáticamente.</p>';
+    return;
+  }
+  box.innerHTML = '';
+  let diaActual = null;
+  for (const o of lista) {
+    const dia = tituloDiaOrden(o.creadaEn);
+    if (dia !== diaActual) {
+      diaActual = dia;
+      const h = document.createElement('h3');
+      h.className = 'orders-day';
+      h.textContent = dia;
+      box.appendChild(h);
+    }
+    const totales = totalesTextoOrden(o);
+    const div = document.createElement('div');
+    div.className = 'camp-card order-card';
+    div.innerHTML = `
+      <h3>Orden #${esc(o.numeroOrden)} <span class="pill">${esc(horaCorta(o.creadaEn))}</span>
+      ${o.domingoEspecial ? '<span class="pill err">⚠ domingo</span>' : ''}</h3>
+      <div class="camp-stats">
+        <span>Cliente: <b>${esc(o.cliente || '')}</b>${o.compania ? ` / ${esc(o.compania)}` : ''}</span>
+        <span>Teléfono: <b>${esc(o.telefono || o.waId || '')}</b></span>
+        <span>Cantidad: <b>${esc(o.yardas || '')} yds${o.plus ? ' plus' : ''}</b></span>
+        <span>Mix: <b>${esc(o.mixTexto || o.mix || '')}</b></span>
+        <span>Dirección: <b>${esc(o.direccion || '')}</b></span>
+        <span>Entrega: <b>${esc(o.fechaCorta || o.fecha || '')}${o.hora ? ' — ' + esc(o.hora) : ''}</b></span>
+        ${o.pago ? `<span>Pago: <b>${esc(o.pago)}</b></span>` : ''}
+        ${totales ? `<span>${totales}</span>` : ''}
+      </div>
+      <button class="btn-small" type="button">Ver detalle</button>
+      <pre class="order-detail hidden">${esc(o.confirmacionArmada || '')}</pre>`;
+    const btn = div.querySelector('button');
+    const detalle = div.querySelector('.order-detail');
+    btn.addEventListener('click', () => {
+      detalle.classList.toggle('hidden');
+      btn.textContent = detalle.classList.contains('hidden') ? 'Ver detalle' : 'Ocultar detalle';
+    });
+    box.appendChild(div);
+  }
+}
+
+document.getElementById('ord-q').addEventListener('input', pintarOrdenes);
+document.getElementById('ord-fecha').addEventListener('change', pintarOrdenes);
+document.getElementById('ord-refresh').addEventListener('click', cargarOrdenes);
 
 // ---------------- Arranque ----------------
 if (token()) mostrarApp();
