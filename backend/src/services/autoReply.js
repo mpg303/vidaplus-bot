@@ -385,7 +385,9 @@ function esPagoEfectivo(pago) {
 // Texas Comptroller). «Si es Zelle tiene que enviarlo antes de
 // cargar el concrete» — al Zelle de la compañía, el correo
 // Jmpconcreteanddispatchllc@gmail.com (el número de WhatsApp
-// NO recibe Zelle, como dicen las facturas de JMP).
+// NO recibe Zelle, como dicen las facturas de JMP). Y cuando el
+// pago es por Zelle se le pide al cliente la CONFIRMACIÓN de la
+// transferencia (orden del dueño, 2026-11-01).
 // ============================================================
 const PAGO_CHEQUE = 'Cheque';
 const RECARGO_CREDITO_PCT = 4;
@@ -408,8 +410,8 @@ function notaMetodoPago(pago, idioma) {
   }
   if (pago === 'Zelle') {
     return idioma === 'en'
-      ? `The Zelle payment must be sent *before* we load the concrete, to: ${ZELLE_JMP} (this WhatsApp number does not receive Zelle).`
-      : `El pago por Zelle tiene que enviarlo *antes* de que carguemos el concreto, a: ${ZELLE_JMP} (este número de WhatsApp no recibe Zelle).`;
+      ? `The Zelle payment must be sent *before* we load the concrete, to: ${ZELLE_JMP} (this WhatsApp number does not receive Zelle). Once you send it, please send us the transfer confirmation here.`
+      : `El pago por Zelle tiene que enviarlo *antes* de que carguemos el concreto, a: ${ZELLE_JMP} (este número de WhatsApp no recibe Zelle). Cuando lo envíe, mándenos por aquí la confirmación de la transferencia.`;
   }
   return null;
 }
@@ -4087,7 +4089,7 @@ function infoMetodoPago(pago, idioma) {
       case PAGO_CHEQUE:
         return `Yes, we accept checks. Check payments have taxes (${TAXES_TX}) added.`;
       case 'Zelle':
-        return `Yes, you can pay by Zelle. It must be sent before we load the concrete, to ${ZELLE_JMP} (this WhatsApp number does not receive Zelle).`;
+        return `Yes, you can pay by Zelle. It must be sent before we load the concrete, to ${ZELLE_JMP} (this WhatsApp number does not receive Zelle). Once you send it, please send us the transfer confirmation here.`;
       case 'Tarjeta de débito':
         return 'Yes, we accept debit cards, with no extra charges.';
       case PAGO_EFECTIVO:
@@ -4103,7 +4105,7 @@ function infoMetodoPago(pago, idioma) {
     case PAGO_CHEQUE:
       return `Sí, aceptamos cheque. A los pagos con cheque se les suman los taxes (${TAXES_TX}).`;
     case 'Zelle':
-      return `Sí, puede pagar por Zelle. Tiene que enviarlo antes de que carguemos el concreto, a ${ZELLE_JMP} (este número de WhatsApp no recibe Zelle).`;
+      return `Sí, puede pagar por Zelle. Tiene que enviarlo antes de que carguemos el concreto, a ${ZELLE_JMP} (este número de WhatsApp no recibe Zelle). Cuando lo envíe, mándenos por aquí la confirmación de la transferencia.`;
     case 'Tarjeta de débito':
       return 'Sí, aceptamos tarjeta de débito, sin cargos extra.';
     case PAGO_EFECTIVO:
