@@ -4433,9 +4433,94 @@ function decisionCambioPago(orden, nuevoPago, idioma, conversacion) {
   return decision;
 }
 
+// ============================================================
+// REFERENCIA A UNA ORDEN EXISTENTE (ronda 24, 2026-11-01;
+// captura real de Jesus probando su orden #1): cerrada su
+// orden, el cliente escribió «Quiero seguir con la order 1» y
+// el bot le contestó «Ese mix no está disponible… ¿Por cuál
+// mix lo cambiamos en su orden?» — el «1» de «order 1» entró a
+// extraerDatos como si fuera un mix (pareceMix acepta cualquier
+// texto con dígitos) y disparó la corrección de mix post-cierre.
+// REGLA: el número que sigue a «order»/«orden» es un NÚMERO DE
+// ORDEN, jamás un mix, un PSI ni unas yardas. Si el mensaje SOLO
+// refiere a la orden, se le reconoce (si es la de este chat) o
+// se le dice con amabilidad que en este chat no aparece (si es
+// otro número o no hay orden cerrada); si además pide un cambio
+// concreto, el análisis sigue SIN la frase de la referencia,
+// para que el número no contamine la extracción.
+// ============================================================
+function detectarReferenciaOrden(texto) {
+  const t = ` ${normalizar(texto)} `;
+  const m =
+    /\b(?:order|orden)\s*(?:(?:numero|number|num|no)\.?\s*)?#?\s*(\d{1,6})\b/.exec(t);
+  if (!m) return null;
+  const resto = `${t.slice(0, m.index)} ${t.slice(m.index + m[0].length)}`
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Lo que queda fuera de la referencia, sin las palabras de
+  // puro enlace («quiero seguir con la», «i want to continue
+  // with»…): si no queda nada con contenido, el mensaje SOLO
+  // refiere a la orden.
+  const restoUtil = resto
+    .replace(
+      /\b(quiero|quisiera|seguir|seguimos|continuar|continua|con|la|el|mi|de|del|por|favor|esa|ese|esta|este|hola|buenas|i|want|would|like|to|continue|with|the|my|please|hello|hi)\b/g,
+      ' '
+    )
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { numero: parseInt(m[1], 10), resto, restoUtil };
+}
+
+/** Respuesta a la referencia pura de una orden (ronda 24). */
+function decisionReferenciaOrden(orden, numero, idioma) {
+  const en = idioma === 'en';
+  let numeroOrden = null;
+  if (orden) {
+    // El flow ya se limpió al cerrar: el número de la orden
+    // cerrada vive en su confirmación armada («Order number: N»).
+    const mN = /Order number:\s*(\d+)/.exec(orden.text || '');
+    if (mN) numeroOrden = parseInt(mN[1], 10);
+  }
+  if (numeroOrden !== null && numeroOrden === numero) {
+    const lineas = String(orden.text || '').split('\n');
+    const detalle = [lineas[1], lineas[2], lineas[3]]
+      .filter((l) => l && l.trim())
+      .join(' · ');
+    return {
+      responder: true,
+      texto: en
+        ? `Of course, your order *#${numero}* is already registered with us.${detalle ? ` (${detalle})` : ''} What do you need: change something on that order, or place a new order?`
+        : `Claro, su orden *#${numero}* ya está registrada con nosotros.${detalle ? ` (${detalle})` : ''} ¿Qué necesita: cambiar algo de esa orden o hacer una orden nueva?`,
+      intent: 'postcierre',
+      topic: 'la referencia a su orden ya registrada',
+      sinPrefijoDespertar: true,
+    };
+  }
+  return {
+    responder: true,
+    texto: en
+      ? `I don't see an order with number *#${numero}* in this chat. 🙏 If you'd like, we can start a new quote, or I can pass your case to our team to review it with you.`
+      : `En este chat no veo una orden con el número *#${numero}*. 🙏 Si quiere, empezamos una cotización nueva, o le paso su caso a nuestro equipo para que lo revise con usted.`,
+    intent: 'postcierre',
+    topic: 'la referencia a una orden que no aparece en este chat',
+    sinPrefijoDespertar: true,
+  };
+}
+
 function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
   const orden = ultimaOrdenCerrada(conversacion);
-  if (!orden) return null;
+  if (!orden) {
+    // Referencia pura a una orden sin orden cerrada en este
+    // chat (ronda 24): se contesta con la línea amable de que
+    // aquí no aparece ese número — jamás con la línea de mix
+    // no disponible, que era el error de la captura.
+    const refSinOrden = detectarReferenciaOrden(textoCliente);
+    if (refSinOrden && !refSinOrden.restoUtil) {
+      return decisionReferenciaOrden(null, refSinOrden.numero, idiomaMsg);
+    }
+    return null;
+  }
   // Saludo puro tras el cierre: lo atiende la ruta de saludo.
   if (esSaludoPuro(textoCliente)) return null;
   let msgs = [];
@@ -4477,7 +4562,20 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
       ? 'en'
       : 'es'
     : idiomaOrden || idiomaMsg;
-  const d = extraerDatos(textoCliente, 'mix');
+  // REFERENCIA A UNA ORDEN (ronda 24): se detecta ANTES de
+  // extraer el mix. Si el mensaje solo refiere a la orden, se
+  // atiende aquí; si trae además un cambio concreto, el
+  // análisis sigue con el texto SIN la frase «order/orden N»,
+  // para que su número no entre como mix ni como yardas.
+  const refOrden = detectarReferenciaOrden(textoCliente);
+  let textoAnalisis = textoCliente;
+  if (refOrden) {
+    if (!refOrden.restoUtil) {
+      return decisionReferenciaOrden(orden, refOrden.numero, idioma);
+    }
+    textoAnalisis = refOrden.resto;
+  }
+  const d = extraerDatos(textoAnalisis, 'mix');
 
   if (d.psiInvalido || d.mixInvalido) {
     // Corrección a un mix que NO existe: redacción oficial (sin
@@ -4555,8 +4653,8 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
         ? 'en'
         : 'es'
       : idioma;
-    const tNorm = ` ${normalizar(textoCliente)} `;
-    const pagoDetectadoPc = extraerPago(textoCliente);
+    const tNorm = ` ${normalizar(textoAnalisis)} `;
+    const pagoDetectadoPc = extraerPago(textoAnalisis);
     const afirmativo = /\b(si|yes|ok|okay|dale|claro|va|bueno|cambialo|cambielo|hazlo)\b/.test(tNorm);
     const decisionPagoSimple = (texto) => ({
       responder: true,
