@@ -4736,6 +4736,193 @@ function decisionReferenciaOrden(orden, numero, idioma) {
   };
 }
 
+// ============================================================
+// RONDA 27 (2026-11-01; captura real de Jesus, 11:53–11:54):
+// en MEDIO de una cotización nueva (el bot acababa de preguntar
+// «¿Va a ocupar alguna pompa para este trabajo?»), Jesus
+// escribió «Quiero seguir con la order 1» y el bot soltó «Ese
+// mix no está disponible…» y repitió la pregunta de la pompa:
+// la detección de referencia de la ronda 24 SOLO corría en el
+// post-cierre (sin flujo activo), y con un flujo en curso el
+// «1» de «order 1» caía en la extracción del flujo como mix
+// inválido. REGLA: la referencia a una orden se detecta en
+// CUALQUIER paso, ANTES de extraer los datos del flujo — el
+// número tras «order»/«orden» nunca es mix, PSI ni yardas. La
+// cotización en curso NO se pierde: sus datos quedan intactos
+// y el flujo queda marcado como interrumpido por la orden
+// (flow.ordenInterrumpida); resuelto el asunto de la orden
+// vieja — o si el cliente sigue con la nueva — se retoma en el
+// paso en que iba. NUNCA se mezclan datos de una orden en otra.
+// ============================================================
+
+/** ¿El mensaje captura el dato que el flujo pide en su paso actual? */
+function capturaPasoActual(flow, texto) {
+  const paso = pasoActual(flow);
+  if (!paso) return false;
+  const d = extraerDatos(texto, paso);
+  switch (paso) {
+    case 'yardas':
+      return !!d.yardas;
+    case 'mix':
+      if (!flow.datos.mix && !flow.datos.mixesCotizacion) return !!(d.mix || d.mixesCotizacion);
+      if (!flow.datos.aire) return !!d.aire;
+      if (!flow.datos.pompa || flow.datos.pompa === 'pendiente') return !!d.pompa;
+      return false;
+    case 'direccion':
+      return !!d.direccion;
+    case 'fecha':
+      return !!(d.fecha || d.hora);
+    case 'hora':
+      return !!d.hora;
+    case 'pago':
+      return !!extraerPago(texto);
+    default:
+      // nombre/compañía son texto libre: no se puede distinguir
+      // una respuesta al paso de un asunto de la orden vieja.
+      return false;
+  }
+}
+
+/** ¿El cliente dice que sigue con la cotización NUEVA (no con la orden vieja)? */
+function esSeguirConLaNueva(texto) {
+  const t = ` ${normalizar(texto)} `;
+  return /\b(la nueva|lo nuevo|nueva cotizacion|orden nueva|con la nueva|sigamos con la nueva|seguir con la nueva|continuar con la nueva|mejor la nueva|quiero la nueva|the new one|new quote|continue with the new|go with the new)\b/.test(t);
+}
+
+/** Línea con la que se retoma la cotización nueva (su paso pendiente). */
+function lineaRetomaCotizacion(flow, idioma) {
+  const paso = pasoActual(flow);
+  const pregunta = paso ? preguntaPara(paso, flow.datos, idioma) : '';
+  if (!pregunta) return '';
+  return idioma === 'en'
+    ? `\nAnd let's keep going with your new quote: ${pregunta}`
+    : `\nY seguimos con su cotización nueva: ${pregunta}`;
+}
+
+/**
+ * Una referencia a una orden CON un flujo activo (ronda 27):
+ * si el número coincide con la orden cerrada de este chat, la
+ * cotización nueva queda PAUSADA (datos intactos, marca
+ * flow.ordenInterrumpida) y se responde con el reconocimiento
+ * de las rondas 24/25; si no coincide — o no hay orden cerrada
+ * — sale la línea amable de la ronda 24 y al final se repite la
+ * pregunta del paso actual, para que el cliente siga su
+ * cotización nueva (el flujo no se cancela ni se marca).
+ */
+function decisionInterrupcionReferencia(conversacion, ref, idiomaMsg) {
+  const flow = conversacion.flow;
+  const idiomaFlow = flow.idioma || idiomaMsg;
+  const orden = ultimaOrdenCerrada(conversacion);
+  const numeroOrden = orden ? numeroOrdenDeArmada(orden.text) : null;
+  const decisionRef = decisionReferenciaOrden(orden, ref.numero, idiomaFlow);
+  if (numeroOrden !== null && numeroOrden === ref.numero) {
+    flow.ordenInterrumpida = ref.numero;
+    db.setConversationFlow(conversacion.id, flow);
+    return decisionRef;
+  }
+  const paso = pasoActual(flow);
+  const pregunta = paso ? preguntaPara(paso, flow.datos, idiomaFlow) : '';
+  if (pregunta) {
+    decisionRef.texto +=
+      idiomaFlow === 'en'
+        ? `\nLet's keep going with your quote: ${pregunta}`
+        : `\nSeguimos con su cotización: ${pregunta}`;
+  }
+  return decisionRef;
+}
+
+/**
+ * El turno SIGUIENTE a la interrupción (la cotización nueva
+ * está pausada por la orden vieja): decide si el mensaje es de
+ * la ORDEN VIEJA (su elección del mix inicial, que no elige
+ * todavía, u otra referencia a ella) o de la COTIZACIÓN NUEVA
+ * (dice que sigue con la nueva, o responde al paso pendiente).
+ * Devuelve la decisión, o null si el mensaje es un dato de la
+ * cotización nueva y debe seguir el flujo normal. Ante la duda
+ * no se mezcla nada: se pregunta en una línea con cuál sigue.
+ */
+function manejarInterrupcionOrden(conversacion, textoCliente, idiomaMsg) {
+  const flow = conversacion.flow;
+  const numeroInt = flow.ordenInterrumpida;
+  const orden = ultimaOrdenCerrada(conversacion);
+  const idiomaFlow = flow.idioma || idiomaMsg;
+  const numeroOrden = orden ? numeroOrdenDeArmada(orden.text) : null;
+
+  // Otra referencia en este turno: si es a la MISMA orden, se
+  // reconoce de nuevo y la interrupción sigue; si es a otro
+  // número, manda la regla general (línea amable + la pregunta
+  // del paso) y la interrupción se cierra.
+  const ref = detectarReferenciaOrden(textoCliente);
+  if (ref) {
+    if (numeroOrden !== null && ref.numero === numeroOrden && ref.numero === numeroInt) {
+      return decisionReferenciaOrden(orden, ref.numero, idiomaFlow);
+    }
+    flow.ordenInterrumpida = null;
+    db.setConversationFlow(conversacion.id, flow);
+    return decisionInterrupcionReferencia(conversacion, ref, idiomaMsg);
+  }
+
+  // El cliente dice que sigue con la NUEVA: se cierra la
+  // interrupción y se repite la pregunta del paso en que iba,
+  // sin consumir el mensaje como dato del flujo.
+  if (esSeguirConLaNueva(textoCliente)) {
+    flow.ordenInterrumpida = null;
+    db.setConversationFlow(conversacion.id, flow);
+    const pregunta = preguntaPara(pasoActual(flow), flow.datos, idiomaFlow);
+    return {
+      responder: true,
+      texto:
+        (idiomaFlow === 'en'
+          ? `Of course, let's keep going with your new quote.`
+          : 'Claro, seguimos con su cotización nueva.') +
+        (pregunta ? `\n${pregunta}` : ''),
+      intent: 'flujo',
+      topic: 'la continuación de su cotización nueva',
+      sinPrefijoDespertar: true,
+    };
+  }
+
+  // ¿Es la elección del mix inicial de la orden vieja, o que no
+  // elige todavía? Manda la orden vieja: lo atiende la
+  // maquinaria post-cierre (rondas 25/26) y, al confirmarla, se
+  // retoma la cotización nueva en el paso en que iba.
+  const mixesOrden = orden ? mixesCotizacionDeOrden(orden) : null;
+  const dMix = extraerDatos(textoCliente, 'mix');
+  const esEleccionInicio = !!(mixesOrden && dMix.mix && mixesOrden.includes(dMix.mix));
+  if (esEleccionInicio || esNoEleccionInicioMix(textoCliente)) {
+    const decisionPc = manejarPostCierre(conversacion, textoCliente, idiomaMsg);
+    if (decisionPc) {
+      flow.ordenInterrumpida = null;
+      db.setConversationFlow(conversacion.id, flow);
+      if (decisionPc.responder) decisionPc.texto += lineaRetomaCotizacion(flow, idiomaFlow);
+      return decisionPc;
+    }
+  }
+
+  // ¿Responde al paso pendiente de la cotización nueva? Manda
+  // la nueva: se cierra la interrupción y el mensaje sigue el
+  // flujo normal, con todo lo capturado intacto.
+  if (capturaPasoActual(flow, textoCliente)) {
+    flow.ordenInterrumpida = null;
+    db.setConversationFlow(conversacion.id, flow);
+    return null;
+  }
+
+  // Ante la duda no se mezcla nada: se pregunta en UNA línea
+  // con cuál sigue — la orden vieja o la cotización nueva — y
+  // la interrupción queda abierta para su respuesta.
+  return {
+    responder: true,
+    texto:
+      idiomaFlow === 'en'
+        ? `Just to be sure: are we working on your order *#${numeroInt}* or on your new quote?`
+        : `Para no mezclar: ¿seguimos con su orden *#${numeroInt}* o con su cotización nueva?`,
+    intent: 'flujo',
+    topic: 'aclarar si sigue con la orden registrada o con la cotización nueva',
+    sinPrefijoDespertar: true,
+  };
+}
+
 function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
   const orden = ultimaOrdenCerrada(conversacion);
   if (!orden) {
@@ -5187,6 +5374,39 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
   // jamás se cae al menú genérico a mitad del flujo.
   if (conversacion.flow && conversacion.flow.datos) {
     const paso = pasoActual(conversacion.flow);
+    // RONDA 27: la referencia a una orden («seguir con la
+    // order 1») se detecta TAMBIÉN con un flujo activo, ANTES
+    // de procesar la respuesta al paso actual y de extraer
+    // datos: el número tras «order»/«orden» nunca es un mix.
+    // Si la cotización quedó pausada por una orden vieja, este
+    // turno se resuelve primero contra esa interrupción.
+    if (conversacion.flow.ordenInterrumpida) {
+      const rInt = manejarInterrupcionOrden(conversacion, textoCliente, idiomaMsg);
+      if (rInt) return rInt;
+      // null: el mensaje es un dato de la cotización nueva;
+      // sigue el curso normal del flujo, aquí abajo.
+    } else if (intent.id !== 'humano') {
+      const refFlow = detectarReferenciaOrden(textoCliente);
+      if (refFlow) {
+        const ordenFlow = ultimaOrdenCerrada(conversacion);
+        const nOrdenFlow = ordenFlow ? numeroOrdenDeArmada(ordenFlow.text) : null;
+        if (nOrdenFlow !== null && nOrdenFlow === refFlow.numero && refFlow.restoUtil) {
+          // La referencia trae además la elección o un cambio
+          // concreto sobre ESA orden: lo atiende la maquinaria
+          // post-cierre en este mismo turno y la cotización
+          // nueva se retoma al final, con sus datos intactos.
+          const decPc = manejarPostCierre(conversacion, textoCliente, idiomaMsg);
+          if (decPc) {
+            decPc.texto += lineaRetomaCotizacion(
+              conversacion.flow,
+              conversacion.flow.idioma || idiomaMsg
+            );
+            return decPc;
+          }
+        }
+        return decisionInterrupcionReferencia(conversacion, refFlow, idiomaMsg);
+      }
+    }
     // El intent «humano» NO se evalúa en los pasos de nombre y
     // compañía: lo que el cliente escriba ahí ES su nombre o su
     // compañía (un cliente que se llama Jesús no está pidiendo
