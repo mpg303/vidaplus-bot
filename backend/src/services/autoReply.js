@@ -2515,7 +2515,7 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
       case 'compania':
         return "And what's the name of your company? If you don't have one and it's personal, just let me know and we'll leave it that way.";
       case 'pago':
-        return 'How will you pay: cash, debit card, credit card or Zelle?';
+        return 'How will you pay: cash, debit card, credit card, Zelle or check?';
       default:
         return '';
     }
@@ -2583,14 +2583,13 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
       return '¿Y cuál es el nombre de su compañía? Si no tiene compañía y es particular, dígamelo y así lo dejamos.';
     case 'pago':
       // Último dato: la forma de pago (sin pedir datos de cobro).
-      // La pregunta ofrece SOLO estas opciones y en este orden
-      // (palabra del dueño, 2026-10-31 19:51: «Después que
-      // tengas toda la order lista vas a preguntar cómo vas a
-      // pagar cash debit card credit card o zelle»): efectivo,
-      // débito, crédito, Zelle. El CHEQUE no se ofrece en la
-      // pregunta, pero sigue ACEPTADO si el cliente lo nombra
-      // (se sumó el 2026-10-31; se le suman los taxes).
-      return '¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta de crédito o Zelle?';
+      // La pregunta ofrece las opciones en ESTE orden (palabra
+      // del dueño, 2026-10-31 19:51: cash, débito, crédito,
+      // Zelle; y 19:58: el cheque TAMBIÉN se ofrece — «¿Xq no
+      // lo ofreces? Aquí el que decido soy yo»: el asistente no
+      // decide exclusiones por su cuenta). El cheque, último,
+      // lleva los taxes (se sumó el 2026-10-31).
+      return '¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta de crédito, Zelle o cheque?';
     default:
       return '';
   }
