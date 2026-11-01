@@ -400,9 +400,11 @@ function notaMetodoPago(pago, idioma) {
       : `A los pagos con tarjeta de crédito se les suma un cargo por procesamiento del ${RECARGO_CREDITO_PCT}%.`;
   }
   if (pago === PAGO_CHEQUE) {
+    // El dueño (2026-10-31 21:07): cuando la orden ya queda con
+    // modalidad cheque, el bot dice a nombre de quién va el cheque.
     return idioma === 'en'
-      ? `Check payments have taxes (${TAXES_TX}) added.`
-      : `A los pagos con cheque se les suman los taxes (${TAXES_TX}).`;
+      ? `Check payments have taxes (${TAXES_TX}) added. Please make the check payable to *JMP Concrete & Dispatch LLC*.`
+      : `A los pagos con cheque se les suman los taxes (${TAXES_TX}). El cheque se hará a nombre de *JMP Concrete & Dispatch LLC*.`;
   }
   if (pago === 'Zelle') {
     return idioma === 'en'
