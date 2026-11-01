@@ -3802,6 +3802,26 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     if (flow.tipo === 'pedido' && datos.pago !== 'Tarjeta de crédito') {
       textoResumen += bloqueResenaSiAplica(conversacion, idioma);
     }
+    // RONDA 26 (orden del dueño, 2026-11-01 11:45: «Sí, que
+    // también lo pregunte al cerrar la orden»): si la orden
+    // NUEVA cierra con 2 COTIZACIONES, el cierre mismo le
+    // pregunta al cliente CON CUÁL MIX VA A EMPEZAR, nombrando
+    // ambos — la misma pregunta de la ronda 25, sin esperar a
+    // que el cliente vuelva a escribir «seguir con la order N».
+    // La pregunta va de ÚLTIMO en el mensaje: es lo que queda
+    // pendiente de responder, y el post-cierre la reconoce con
+    // el mismo mecanismo de la ronda 25 (esperandoInicioMix).
+    const mixesCierre =
+      datos.mixesCotizacion && datos.mixesCotizacion.length >= 2
+        ? datos.mixesCotizacion
+        : null;
+    if (mixesCierre) {
+      textoResumen +=
+        '\n' +
+        (idioma === 'en'
+          ? `Since it has ${mixesCierre.length} quotes. ${preguntaInicioMix(mixesCierre, idioma)}`
+          : `Como tiene ${mixesCierre.length} cotizaciones, ${preguntaInicioMix(mixesCierre, idioma)}`);
+    }
     return {
       responder: true,
       texto: textoResumen,
@@ -3812,7 +3832,13 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       // webhook envía AUTOMÁTICAMENTE la forma de autorización
       // como documento de WhatsApp y abre la espera de documentos
       // (conv.docsTarjeta). Débito, Zelle y efectivo: sin forma.
-      formaTarjeta: datos.pago === 'Tarjeta de crédito',
+      // RONDA 26: con las cotizaciones en par, la forma NO sale
+      // al cerrar: su monto depende de qué mix elija el cliente
+      // para empezar, así que espera esa elección y sale
+      // entonces, pre-llenada con el total de crédito de ese
+      // mix (ver decisionInicioMix). Sin el par, sale al cerrar
+      // como siempre.
+      formaTarjeta: datos.pago === 'Tarjeta de crédito' && !mixesCierre,
       // Monto pre-llenado de la forma (null si no hay un único
       // total calculable): el webhook lo pasa a formaTarjeta.
       montoForma: datos.pago === 'Tarjeta de crédito' ? montoFormaTarjeta(datos) : null,
@@ -4584,8 +4610,39 @@ function aplicarInicioMixEnConfirmacion(textoArmada, mixElegido) {
   };
 }
 
+/** ¿El cliente, en vez de elegir un mix, dice que no elige todavía («las dos», «déjalo así», «no sé», «luego te digo»)? */
+function esNoEleccionInicioMix(texto) {
+  const t = ` ${normalizar(texto)} `;
+  return /\b(las dos|los dos|ambas|ambos|both|no se|no sabe|no lo se|todavia no|aun no|dejalo asi|deja asi|asi dejalo|asi esta bien|luego te digo|despues te digo)\b/.test(t);
+}
+
+/**
+ * El cliente insistió en NO elegir el mix inicial (ronda 26):
+ * la pregunta ya se repitió una vez y no se le fuerza en bucle.
+ * La orden queda TAL CUAL, con su par de cotizaciones, y la
+ * elección se le volverá a pedir cuando continúe su orden
+ * (rondas 24–25). OJO: el texto NO lleva el fragmento de la
+ * pregunta de inicio — así el post-cierre deja de estar
+ * «esperando» la elección y no la repite en cada mensaje.
+ */
+function decisionDejarCotizaciones(orden, idioma) {
+  const en = idioma === 'en';
+  const mixes = mixesCotizacionDeOrden(orden) || [];
+  const numero = numeroOrdenDeArmada(orden.text);
+  const lista = mixes.map((m) => `*${m}*`).join(en ? ' and ' : ' y ');
+  return {
+    responder: true,
+    texto: en
+      ? `No problem, we'll leave your order${numero !== null ? ` *#${numero}*` : ''} with its ${mixes.length} quotes: ${lista}, as it is. When you decide which one to start with, just tell me here and we'll set it up. 🙏`
+      : `Perfecto, dejamos su orden${numero !== null ? ` *#${numero}*` : ''} con las ${mixes.length} cotizaciones: ${lista}, como está. Cuando decida con cuál empezar, me dice por aquí y lo dejamos listo. 🙏`,
+    intent: 'postcierre',
+    topic: 'la orden queda con sus cotizaciones, sin elegir el mix inicial',
+    sinPrefijoDespertar: true,
+  };
+}
+
 /** Confirmación al cliente de que su orden empieza con el mix elegido (ronda 25). */
-function decisionInicioMix(orden, mixElegido, idioma) {
+function decisionInicioMix(orden, mixElegido, idioma, conversacion) {
   const en = idioma === 'en';
   const numero = numeroOrdenDeArmada(orden.text);
   const { nuevaArmada, total, totalCredito } = aplicarInicioMixEnConfirmacion(orden.text, mixElegido);
@@ -4608,6 +4665,27 @@ function decisionInicioMix(orden, mixElegido, idioma) {
   };
   if (nuevaArmada && nuevaArmada !== orden.text) {
     decision.confirmacionArmada = nuevaArmada;
+  }
+  // RONDA 26 — FORMA DE CRÉDITO TRAS LA ELECCIÓN: si la orden
+  // paga con tarjeta de crédito y la forma de autorización AÚN
+  // NO SALIÓ (al cerrar con el par la forma espera la elección
+  // del mix, ver el cierre en manejarFlujo), sale AHORA,
+  // pre-llenada con el total de crédito del mix elegido — el
+  // mismo mecanismo que usa el cambio post-cierre a crédito
+  // (decisionCambioPago). La señal de que ya salió es la
+  // espera de documentos (conversacion.docsTarjeta): si ya
+  // existe — órdenes cerradas ANTES de la ronda 26, cuya forma
+  // salió al cerrar sin llenar — NO se reenvía otra.
+  const mPagoArmada = /^Pago: (.+)$/m.exec(orden.text || '');
+  if (
+    mPagoArmada &&
+    mPagoArmada[1].trim() === 'Tarjeta de crédito' &&
+    totalCredito &&
+    !(conversacion && conversacion.docsTarjeta)
+  ) {
+    decision.formaTarjeta = true;
+    decision.montoForma = parseFloat(String(totalCredito).replace(/,/g, ''));
+    decision.idiomaForma = idioma;
   }
   return decision;
 }
@@ -4757,16 +4835,44 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
     mixesOrden.includes(d.mix) &&
     (esperandoInicioMix || refOrden)
   ) {
-    return decisionInicioMix(orden, d.mix, idioma);
+    return decisionInicioMix(orden, d.mix, idioma, conversacion);
   }
   if (
     esperandoInicioMix &&
     mixesOrden &&
-    (d.mixesCotizacion || d.psiInvalido || d.mixInvalido)
+    (d.mixesCotizacion || d.psiInvalido || d.mixInvalido || esNoEleccionInicioMix(textoAnalisis))
   ) {
     // Estábamos esperando la elección y el cliente repitió el
-    // par o nombró un mix que no es de su orden: se le vuelve
-    // a preguntar con cuál mix va a empezar, nombrando ambos.
+    // par, nombró un mix que no es de su orden o dijo que no
+    // elige todavía: se le vuelve a preguntar con cuál mix va
+    // a empezar, nombrando ambos — PERO UNA SOLA VEZ por
+    // episodio (ronda 26): la pregunta «fresca» del cierre o
+    // de la referencia a la orden no cuenta como repetición;
+    // si ya se repitió una vez y el cliente insiste en no
+    // elegir, no se le fuerza en bucle: la orden queda con su
+    // par, tal cual, y la elección se le pedirá cuando
+    // continúe su orden.
+    const vecesRepetidaInicio = msgs.filter((m) => {
+      if (m.sender !== 'BOT') return false;
+      const t = String(m.text || '');
+      const tl = t.toLowerCase();
+      if (
+        !tl.includes(PREGUNTA_INICIO_MIX_ES) &&
+        !tl.includes(PREGUNTA_INICIO_MIX_EN)
+      ) {
+        return false;
+      }
+      // Pregunta fresca (cierre o referencia): no es repetición.
+      return (
+        !t.includes('Ya quedó registrada su orden') &&
+        !t.includes('ya está registrada') &&
+        !t.includes('Your order is registered') &&
+        !t.includes('is already registered')
+      );
+    }).length;
+    if (vecesRepetidaInicio >= 1) {
+      return decisionDejarCotizaciones(orden, idioma);
+    }
     return decisionPreguntaInicioMix(orden, idioma);
   }
 
