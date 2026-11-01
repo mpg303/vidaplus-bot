@@ -2701,13 +2701,12 @@ function direccionEsDallas(direccion) {
 }
 
 /**
- * TOTAL BASE de la orden para UN mix dado, con la tabla de
- * precios y SIN taxes (los taxes se suman solo con cheque,
- * ronda 15). Devuelve null (sin total: el equipo lo confirma)
- * si la dirección no es de Dallas, si el mix no tiene precio
- * en la tabla (productos sin PSI, «Pompa mix 50-50» sin
- * base) o si la orden ocupa un servicio de pompa aún sin
- * precio definido.
+ * TOTAL de la orden para UN mix dado, con la tabla de precios
+ * y los taxes del 8.25% incluidos. Devuelve null (sin total:
+ * el equipo lo confirma) si la dirección no es de Dallas, si
+ * el mix no tiene precio en la tabla (productos sin PSI,
+ * «Pompa mix 50-50» sin base) o si la orden ocupa un servicio
+ * de pompa aún sin precio definido.
  */
 function calcularTotalParaMix(datos, mix) {
   if (!datos || !datos.yardas || !mix) return null;
@@ -2723,11 +2722,7 @@ function calcularTotalParaMix(datos, mix) {
     if (!(precioPompa > 0)) return null;
     total += precioPompa;
   }
-  // El total BASE va SIN taxes (ronda 15, palabra del dueño
-  // 2026-10-31 20:06: «el cheque los taxes son diferente»):
-  // los taxes del 8.25% se suman SOLO si paga con cheque
-  // (totalesConTaxesCheque); cash, Zelle y débito pagan el
-  // total tal cual y el crédito suma su 4% sobre este base.
+  total *= 1 + IMPUESTOS_PCT / 100;
   return Math.round(total * 100) / 100;
 }
 
@@ -2754,19 +2749,19 @@ function bloquePreciosResumen(datos, idioma = 'es') {
   if (idioma === 'en') {
     if (tot.par) {
       return (
-        '💰 *Your quote prices:*\n' +
+        '💰 *Your quote prices (8.25% taxes included):*\n' +
         tot.par.map((p) => `• ${p.mix}: $${formatearDinero(p.total)}`).join('\n')
       );
     }
-    return `💰 *Total: $${formatearDinero(tot.uno)}*`;
+    return `💰 *Total: $${formatearDinero(tot.uno)}* (includes 8.25% taxes)`;
   }
   if (tot.par) {
     return (
-      '💰 *Precios de sus cotizaciones:*\n' +
+      '💰 *Precios de sus cotizaciones (incluyen los taxes del 8.25%):*\n' +
       tot.par.map((p) => `• ${p.mix}: $${formatearDinero(p.total)}`).join('\n')
     );
   }
-  return `💰 *Total: $${formatearDinero(tot.uno)}*`;
+  return `💰 *Total: $${formatearDinero(tot.uno)}* (incluye los taxes del 8.25%)`;
 }
 
 /**
@@ -2775,8 +2770,8 @@ function bloquePreciosResumen(datos, idioma = 'es') {
  * (modelo por método del dueño, reafirmado 2026-10-31 20:01:
  * «para cada pago es diferente… la única que no cambia el
  * pago es la de cash o Zelle, que no cobran nada por
- * procesar»). Cash, Zelle y débito NO alteran el total;
- * el cheque suma los taxes (totalesConTaxesCheque, ronda 15).
+ * procesar»). Cash, Zelle, débito y cheque NO alteran el
+ * total mostrado (los taxes ya van dentro de todo total).
  * Null si el método no es crédito o no hay total calculable.
  */
 function totalesConRecargoCredito(datos) {
@@ -2810,48 +2805,6 @@ function bloqueTotalCredito(datos, idioma = 'es') {
     );
   }
   return `💳 *Total con tarjeta de crédito: $${formatearDinero(tot.uno)}* (incluye el cargo por procesamiento del ${RECARGO_CREDITO_PCT}%)`;
-}
-
-/**
- * Totales FINALES si paga con CHEQUE: los taxes del 8.25%
- * se suman SOLO con este método (ronda 15, palabra del
- * dueño 2026-10-31 20:06: «Recuerda que el cheque los taxes
- * son diferente», confirmado con su ejemplo: 50 yds 3000 =
- * $8,000 + $660 de taxes = $8,660 solo para cheque; cash,
- * Zelle y débito pagan los $8,000 tal cual). Null si el
- * método no es cheque o no hay total calculable.
- */
-function totalesConTaxesCheque(datos) {
-  if (datos.pago !== PAGO_CHEQUE) return null;
-  const tot = totalesCotizacion(datos);
-  if (!tot) return null;
-  const f = 1 + IMPUESTOS_PCT / 100;
-  const aplicar = (x) => Math.round(x * f * 100) / 100;
-  return tot.par
-    ? { par: tot.par.map((p) => ({ mix: p.mix, total: aplicar(p.total) })) }
-    : { uno: aplicar(tot.uno) };
-}
-
-/** Bloque «total con cheque» para el cliente (null si no aplica). */
-function bloqueTotalCheque(datos, idioma = 'es') {
-  const tot = totalesConTaxesCheque(datos);
-  if (!tot) return null;
-  if (idioma === 'en') {
-    if (tot.par) {
-      return (
-        `🧾 *Totals with check (${IMPUESTOS_PCT}% taxes included):*\n` +
-        tot.par.map((p) => `• ${p.mix}: $${formatearDinero(p.total)}`).join('\n')
-      );
-    }
-    return `🧾 *Total with check: $${formatearDinero(tot.uno)}* (includes the ${IMPUESTOS_PCT}% taxes)`;
-  }
-  if (tot.par) {
-    return (
-      `🧾 *Totales con cheque (incluyen los taxes del ${IMPUESTOS_PCT}%):*\n` +
-      tot.par.map((p) => `• ${p.mix}: $${formatearDinero(p.total)}`).join('\n')
-    );
-  }
-  return `🧾 *Total con cheque: $${formatearDinero(tot.uno)}* (incluye los taxes del ${IMPUESTOS_PCT}%)`;
 }
 
 /**
@@ -2917,18 +2870,6 @@ function armarConfirmacion(datos, conversacion) {
       lineas.push(`Total con tarjeta de crédito (+${RECARGO_CREDITO_PCT}%): $${formatearDinero(totCreditoArmada.uno)}`);
     }
   }
-  // Si paga con cheque, la orden trae el total FINAL con los
-  // taxes del 8.25% sumados (solo el cheque los suma, ronda 15).
-  const totChequeArmada = totalesConTaxesCheque(datos);
-  if (totChequeArmada) {
-    if (totChequeArmada.par) {
-      for (const p of totChequeArmada.par) {
-        lineas.push(`Total con cheque (+taxes ${IMPUESTOS_PCT}%) ${p.mix}: $${formatearDinero(p.total)}`);
-      }
-    } else {
-      lineas.push(`Total con cheque (+taxes ${IMPUESTOS_PCT}%): $${formatearDinero(totChequeArmada.uno)}`);
-    }
-  }
   // Fuera de Dallas (o ciudad no determinable) no hay total
   // con la tabla: la orden lo dice claro para el dueño.
   if (!direccionEsDallas(datos.direccion)) {
@@ -2952,8 +2893,6 @@ function resumenCliente(datos, nombre, idioma = 'es') {
   const bloquePrecios = bloquePreciosResumen(datos, idioma);
   // Total final con el 4% si paga con crédito (ronda 14).
   const bloqueCredito = bloqueTotalCredito(datos, idioma);
-  // Total final con los taxes si paga con cheque (ronda 15).
-  const bloqueCheque = bloqueTotalCheque(datos, idioma);
   if (idioma === 'en') {
     return (
       `All set${n}! ✅ Your order is registered:\n` +
@@ -2964,16 +2903,16 @@ function resumenCliente(datos, nombre, idioma = 'es') {
       `• Day: ${datos.fecha} — ${datos.hora}\n` +
       (datos.pago ? `• Payment: ${pagoDisplay(datos.pago, idioma)}\n` : '') +
       (bloquePrecios
-        ? `\n${bloquePrecios}\n` + (bloqueCredito ? `${bloqueCredito}\n` : '') + (bloqueCheque ? `${bloqueCheque}\n` : '') + `A specialist will help you right here. 🙏\n`
+        ? `\n${bloquePrecios}\n` + (bloqueCredito ? `${bloqueCredito}\n` : '') + `A specialist will help you right here. 🙏\n`
         : `\nWe'll confirm price and availability right away. ` +
           `A specialist will help you right here. 🙏\n`) +
       // Same rule as in Spanish: payment is IN ADVANCE, said once.
       (esPagoEfectivo(datos.pago)
         ? ''
         : `Payment is in advance: as soon as your payment is confirmed, we load your order. 🚛`) +
-      // Nota del método (Zelle; crédito y cheque ya traen su
-      // total final en los bloques de arriba), si aplica.
-      (notaMetodoPago(datos.pago, 'en') && !bloqueCredito && !bloqueCheque ? `\n${notaMetodoPago(datos.pago, 'en')}` : '')
+      // Nota del método (cheque/Zelle; el crédito ya trae su
+      // total con el cargo en el bloque de arriba), si aplica.
+      (notaMetodoPago(datos.pago, 'en') && !bloqueCredito ? `\n${notaMetodoPago(datos.pago, 'en')}` : '')
     );
   }
   return (
@@ -2985,7 +2924,7 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     `• Día: ${datos.fecha} — ${datos.hora}\n` +
     (datos.pago ? `• Pago: ${datos.pago}\n` : '') +
     (bloquePrecios
-      ? `\n${bloquePrecios}\n` + (bloqueCredito ? `${bloqueCredito}\n` : '') + (bloqueCheque ? `${bloqueCheque}\n` : '') + `Un especialista le atiende por aquí mismo. 🙏\n`
+      ? `\n${bloquePrecios}\n` + (bloqueCredito ? `${bloqueCredito}\n` : '') + `Un especialista le atiende por aquí mismo. 🙏\n`
       : `\nLe confirmamos precio y disponibilidad en seguida. ` +
         `Un especialista le atiende por aquí mismo. 🙏\n`) +
     // Regla del dueño: el pago es POR ADELANTADO. Se avisa UNA
@@ -2994,10 +2933,10 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     (esPagoEfectivo(datos.pago)
       ? ''
       : `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛`) +
-    // Nota del método (Zelle: enviarlo antes de cargar, al
-    // correo de JMP; crédito y cheque ya traen su total final
-    // en los bloques de precios).
-    (notaMetodoPago(datos.pago, 'es') && !bloqueCredito && !bloqueCheque ? `\n${notaMetodoPago(datos.pago, 'es')}` : '')
+    // Nota del método (cheque: taxes 8.25%; Zelle: enviarlo
+    // antes de cargar, al correo de JMP; el crédito ya trae su
+    // total con el cargo en el bloque de precios).
+    (notaMetodoPago(datos.pago, 'es') && !bloqueCredito ? `\n${notaMetodoPago(datos.pago, 'es')}` : '')
   );
 }
 
@@ -3017,7 +2956,6 @@ function textoCierreTrasOrden(datos, nombre, idioma = 'es') {
       `All set${n}! ✅ Your order is registered with payment by *${pagoDisplay(datos.pago, 'en')}*.` +
       (notaMetodoPago(datos.pago, 'en') ? `\n${notaMetodoPago(datos.pago, 'en')}` : '') +
       (bloqueTotalCredito(datos, 'en') ? `\n${bloqueTotalCredito(datos, 'en')}` : '') +
-      (bloqueTotalCheque(datos, 'en') ? `\n${bloqueTotalCheque(datos, 'en')}` : '') +
       (esPagoEfectivo(datos.pago)
         ? ''
         : `\nPayment is in advance: as soon as your payment is confirmed, we load your order. 🚛`) +
@@ -3028,7 +2966,6 @@ function textoCierreTrasOrden(datos, nombre, idioma = 'es') {
     `¡Listo${n}! ✅ Ya quedó registrada su orden con pago en *${datos.pago}*.` +
     (notaMetodoPago(datos.pago, 'es') ? `\n${notaMetodoPago(datos.pago, 'es')}` : '') +
     (bloqueTotalCredito(datos, 'es') ? `\n${bloqueTotalCredito(datos, 'es')}` : '') +
-    (bloqueTotalCheque(datos, 'es') ? `\n${bloqueTotalCheque(datos, 'es')}` : '') +
     (esPagoEfectivo(datos.pago)
       ? ''
       : `\nEl pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛`) +
@@ -4018,37 +3955,24 @@ function aplicarCambioPagoEnConfirmacion(textoArmada, nuevoPago) {
   const ix = lineas.findIndex((l) => /^Pago: /.test(l));
   if (ix < 0) return null;
   lineas[ix] = `Pago: ${nuevoPago}`;
-  // Las líneas de total FINAL por método («Total con tarjeta
-  // de crédito», «Total con cheque») dependen del método
-  // (rondas 14-15): se quitan siempre y, si el nuevo método
-  // es crédito o cheque, se recalculan desde las líneas
-  // «Total» base de la orden.
-  const sinFinales = lineas.filter(
-    (l) => !/^Total con tarjeta de crédito/.test(l) && !/^Total con cheque/.test(l)
-  );
-  const factor =
-    nuevoPago === 'Tarjeta de crédito'
-      ? 1 + RECARGO_CREDITO_PCT / 100
-      : nuevoPago === PAGO_CHEQUE
-        ? 1 + IMPUESTOS_PCT / 100
-        : null;
-  if (factor) {
-    const aplicar = (s) => Math.round(parseFloat(s.replace(/,/g, '')) * factor * 100) / 100;
-    const etiqueta =
-      nuevoPago === 'Tarjeta de crédito'
-        ? `Total con tarjeta de crédito (+${RECARGO_CREDITO_PCT}%)`
-        : `Total con cheque (+taxes ${IMPUESTOS_PCT}%)`;
-    for (const l of [...sinFinales]) {
+  // Las líneas «Total con tarjeta de crédito» dependen del
+  // método (ronda 14): se quitan siempre y, si el nuevo método
+  // es crédito, se recalculan desde las líneas «Total» base.
+  const sinCredito = lineas.filter((l) => !/^Total con tarjeta de crédito/.test(l));
+  if (nuevoPago === 'Tarjeta de crédito') {
+    const f = 1 + RECARGO_CREDITO_PCT / 100;
+    const aplicar = (s) => Math.round(parseFloat(s.replace(/,/g, '')) * f * 100) / 100;
+    for (const l of [...sinCredito]) {
       const mUno = /^Total: \$([\d,]+\.\d{2})$/.exec(l);
       const mMix = /^Total (.+): \$([\d,]+\.\d{2})$/.exec(l);
       if (mUno) {
-        sinFinales.push(`${etiqueta}: $${formatearDinero(aplicar(mUno[1]))}`);
+        sinCredito.push(`Total con tarjeta de crédito (+${RECARGO_CREDITO_PCT}%): $${formatearDinero(aplicar(mUno[1]))}`);
       } else if (mMix) {
-        sinFinales.push(`${etiqueta} ${mMix[1]}: $${formatearDinero(aplicar(mMix[2]))}`);
+        sinCredito.push(`Total con tarjeta de crédito (+${RECARGO_CREDITO_PCT}%) ${mMix[1]}: $${formatearDinero(aplicar(mMix[2]))}`);
       }
     }
   }
-  return sinFinales.join('\n');
+  return sinCredito.join('\n');
 }
 
 /** Etiqueta corta del método para preguntas/confirmaciones. */
