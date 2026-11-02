@@ -1353,6 +1353,36 @@ function lineaMixInvalido(idioma) {
     : 'Ese mix no está disponible. Si necesitas algo especial, tienes que solicitar un mix design o submittal.';
 }
 
+const MESES_NOMBRE_ES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+];
+const MESES_NOMBRE_EN = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+/**
+ * Corrección cuando el cliente da una FECHA QUE NO EXISTE
+ * (ronda 28, defecto en vivo del dueño, 2026-11-02: a la
+ * pregunta del día el cliente escribió «32 de diciembre» y el
+ * bot contestó «Perfecto, anotado el día: 32 de diciembre» y
+ * siguió a la hora — aceptó y guardó un día imposible). La
+ * fecha no se anota y el flujo vuelve a pedir el día (la
+ * pregunta del paso va enseguida, al final, como siempre);
+ * cuando se sabe el mes, la línea dice cuántos días tiene.
+ * `info` es lo que devuelve fechaExplicitaInvalida /
+ * fechaSueltaInvalida: { mes: índice 0-11 o null, diasMes }.
+ */
+function lineaFechaInvalida(info, idioma) {
+  if (info && info.mes !== null && info.mes !== undefined && info.diasMes) {
+    return idioma === 'en'
+      ? `That day doesn't exist (${MESES_NOMBRE_EN[info.mes]} only has ${info.diasMes} days).`
+      : `Ese día no existe (${MESES_NOMBRE_ES[info.mes]} tiene ${info.diasMes} días).`;
+  }
+  return idioma === 'en' ? "That date doesn't exist." : 'Esa fecha no existe.';
+}
+
 /**
  * Captura ADELANTADA de nombre/compañía cuando el cliente los da
  * sin que se le estén pidiendo («…, soy Juan Pérez, particular»):
@@ -1679,16 +1709,30 @@ function extraerDatos(texto, paso) {
   // Un «mañana» suelto («mañana a las 7 de la mañana») SÍ se
   // sigue detectando como el día: solo se neutraliza el que
   // va pegado a «de/en/por la».
-  const textoFecha = raw.replace(
-    /(\b(?:de|en|por)\s+la\s+)mañana\b/gi,
-    '$1jornada'
-  );
+  const textoFecha = raw
+    .replace(/(\b(?:de|en|por)\s+la\s+)mañana\b/gi, '$1jornada')
+    // «50/50» es la POMPA MIX, no una fecha numérica: se retira
+    // del texto de búsqueda para que jamás se anote como día
+    // (antes quedaba fecha = «50/50» cuando el cliente pedía la
+    // pompa mix en un volcado de datos).
+    .replace(/\b50\s*\/\s*50\b/g, ' ');
   const mFecha =
     textoFecha.match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/) ||
     textoFecha.match(/\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i) ||
     textoFecha.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i);
   if (mFecha) {
-    d.fecha = mFecha[0].trim();
+    // RONDA 28 (defecto en vivo del dueño, 2026-11-02): la
+    // fecha explícita se VALIDA contra el calendario real ANTES
+    // de guardarla — «32 de diciembre» se anotaba tal cual
+    // («Perfecto, anotado el día: 32 de diciembre») y el flujo
+    // seguía a la hora como si el día existiera. Si el día/mes
+    // es imposible, NO se guarda: se marca d.fechaInvalida y el
+    // flujo responde con la corrección y vuelve a pedir el día,
+    // sin avanzar. Las relativas y los días de semana no traen
+    // día/mes explícito y la validación no las toca.
+    const invFecha = fechaExplicitaInvalida(mFecha[0]);
+    if (invFecha) d.fechaInvalida = invFecha;
+    else d.fecha = mFecha[0].trim();
   } else if (
     paso === 'fecha' && !d.hora && !d.yardas && !pareceDireccion(raw) &&
     !esPreguntaPrecio(raw) && !preguntaSobreAire(raw) &&
@@ -1710,7 +1754,14 @@ function extraerDatos(texto, paso) {
     // misma clase de defecto ya corregido con «¿Puedo pagarlo…?»
     // tragado como fecha). Lo que no parece fecha no se guarda:
     // el bot repite la pregunta del día.
-    d.fecha = raw.replace(/[. ]+$/, '');
+    // RONDA 28: por esta vía entraban las fechas imposibles que
+    // el patrón principal no captura («December 32», «12-32»,
+    // «el 32»): se validan igual contra el calendario antes de
+    // guardar el texto tal cual; si el día no existe, se marca
+    // fechaInvalida y NO se guarda.
+    const invRespaldo = fechaExplicitaInvalida(raw) || fechaSueltaInvalida(raw);
+    if (invRespaldo) d.fechaInvalida = invRespaldo;
+    else d.fecha = raw.replace(/[. ]+$/, '');
   }
 
   // Dirección con MARCADOR («Dirección 4215 N Beltwood Dallas
@@ -2662,6 +2713,111 @@ function preguntaPara(paso, datos, idioma = 'es', conEjemplo = false) {
     default:
       return '';
   }
+}
+
+const MESES_TEXTO = {
+  enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
+  julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11,
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+  july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
+};
+
+/** Días que tiene un mes (índice 0-11) en un año dado. */
+function diasEnMes(mesIdx, anio) {
+  const tabla = [
+    31, anio % 4 === 0 && (anio % 100 !== 0 || anio % 400 === 0) ? 29 : 28,
+    31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+  ];
+  return tabla[mesIdx];
+}
+
+/** Año en curso y base (hoy) en la zona del negocio, como en resolverFechaMs. */
+function baseFechaActual() {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: NEGOCIO.zonaHoraria,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const Y = +partes.find((p) => p.type === 'year').value;
+  const M = +partes.find((p) => p.type === 'month').value;
+  const D = +partes.find((p) => p.type === 'day').value;
+  return { Y, base: Date.UTC(Y, M - 1, D) };
+}
+
+/**
+ * Valida un día/mes contra el calendario real. Devuelve null si
+ * la fecha EXISTE, o { mes, diasMes } si es imposible (mes =
+ * índice 0-11 cuando se conoce; null cuando lo imposible es el
+ * mes mismo). El año objetivo sigue la lógica del resolvedor:
+ * con año explícito manda ese año; con mes nombrado, el año en
+ * curso o el próximo si esa fecha ya pasó (así «29 de febrero»
+ * solo vale si el febrero que toca es bisiesto); numérica sin
+ * año, el año en curso.
+ */
+function validarDiaMes(dia, mesIdx, anioExplicito) {
+  const { Y, base } = baseFechaActual();
+  let anio = anioExplicito || Y;
+  if (!anioExplicito && Date.UTC(Y, mesIdx, dia) < base) anio = Y + 1;
+  const max = diasEnMes(mesIdx, anio);
+  if (dia < 1 || dia > max) return { mes: mesIdx, diasMes: max };
+  return null;
+}
+
+function validarFechaNumerica(mes, dia, anioExplicito) {
+  const { Y } = baseFechaActual();
+  if (mes < 1 || mes > 12) return { mes: null, diasMes: null };
+  const max = diasEnMes(mes - 1, anioExplicito || Y);
+  if (dia < 1 || dia > max) return { mes: mes - 1, diasMes: max };
+  return null;
+}
+
+/**
+ * ¿El texto trae una fecha EXPLÍCITA (día y mes) que NO existe
+ * en el calendario? (ronda 28). Cubre los formatos que el parser
+ * ya reconoce, en español e inglés: «32 de diciembre»,
+ * «December 32», «febrero 31» y la numérica M/D «12/32»,
+ * «32/12», «11/31/26». Devuelve null si no hay fecha explícita
+ * o si la que hay SÍ existe — las fechas relativas («mañana»,
+ * «el viernes», «en 2 días») no traen día/mes y no se tocan.
+ * OJO: «50/50» es la pompa mix, no una fecha (ver la limpieza
+ * de textoFecha en extraerDatos); aquí el patrón numérico la
+ * trataría como mes 50, así que quien la capture como mix no
+ * debe pasar por esta validación.
+ */
+function fechaExplicitaInvalida(texto) {
+  const t = normalizar(texto || '');
+  if (!t) return null;
+  let m = t.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/);
+  if (m) return validarDiaMes(+m[1], MESES_TEXTO[m[2]], null);
+  m = t.match(/\b(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})\b/);
+  if (m) return validarDiaMes(+m[2], MESES_TEXTO[m[1]], null);
+  m = t.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (m) {
+    const anio = m[3] ? (m[3].length === 4 ? +m[3] : 2000 + +m[3]) : null;
+    return validarFechaNumerica(+m[1], +m[2], anio);
+  }
+  return null;
+}
+
+/**
+ * Formas SUELTAS que solo llegan a guardarse como fecha por el
+ * respaldo del paso del día (el mensaje entero se tomaba tal
+ * cual): la numérica con guion «12-32» (mismo orden M/D del
+ * parser) y el día del mes suelto imposible («32», «el 32»).
+ * Solo se usa en ese respaldo, donde el mensaje ES la respuesta
+ * a «¿para qué día?».
+ */
+function fechaSueltaInvalida(raw) {
+  const t = normalizar(raw || '').replace(/[. ]+$/, '').trim();
+  const mGuion = t.match(/^(\d{1,2})-(\d{1,2})$/);
+  if (mGuion) return validarFechaNumerica(+mGuion[1], +mGuion[2], null);
+  const mSuelto = t.match(/^(?:el\s+|dia\s+|the\s+)?(\d{1,2})$/);
+  if (mSuelto) {
+    const dia = +mSuelto[1];
+    if (dia < 1 || dia > 31) return { mes: null, diasMes: null };
+  }
+  return null;
 }
 
 /** Fecha corta M/D/AA de la entrega, para la línea 1 de la confirmación. */
@@ -3617,6 +3773,28 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     if (ixNF >= 0) nuevos.splice(ixNF, 1);
   }
 
+  // INVARIANTE DE FECHA IMPOSIBLE (ronda 28, misma red): una
+  // fecha con día/mes explícitos que NO existe («32 de
+  // diciembre» — el defecto en vivo del dueño, 2026-11-02)
+  // jamás queda guardada: ni por una ruta de captura, ni por
+  // ESTADO VIEJO de la versión que la aceptaba (la conversación
+  // de la prueba de Jesus quedó guardada con ese día). Se anula
+  // aquí mismo, el turno se trata como fecha inválida (la
+  // respuesta lleva la corrección con los días del mes) y el
+  // paso del día vuelve a quedar abierto. Un día imposible NO
+  // es domingo especial ni se resuelve a otra fecha: no existe.
+  if (flow.datos.fecha) {
+    const invGuardada = fechaExplicitaInvalida(flow.datos.fecha);
+    if (invGuardada) {
+      flow.datos.fecha = null;
+      if (!detectados.fechaInvalida) detectados.fechaInvalida = invGuardada;
+      const ixCF2 = corregidos.indexOf('fecha');
+      if (ixCF2 >= 0) corregidos.splice(ixCF2, 1);
+      const ixNF2 = nuevos.indexOf('fecha');
+      if (ixNF2 >= 0) nuevos.splice(ixNF2, 1);
+    }
+  }
+
   // HORA AMBIGUA Y HORA CON LA PLANTA CERRADA (regla del
   // dueño, 2026-10-31 17:27): cuando el cliente responde a la
   // pregunta del día/hora (pasos 'fecha' u 'hora') con una hora
@@ -3907,7 +4085,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const preguntaLegitima =
     saludoPuro || !!faq || !!ciudad || (noSabe && !detectados.medidas) ||
     esPreguntaPrecio(textoCliente) || !!preguntaSobreAire(textoCliente) || !!detectados.medidas ||
-    preguntaPedido || !!pagoAdelantado || !!detectados.psiInvalido || !!detectados.mixInvalido;
+    preguntaPedido || !!pagoAdelantado || !!detectados.psiInvalido || !!detectados.mixInvalido || !!detectados.fechaInvalida;
   if (huboAvance) {
     flow.intentos = 0;
     flow.intentosPaso = paso;
@@ -3991,7 +4169,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     partes.push(lineaMedidas(detectados.medidas, idioma));
   } else if (
     !esNuevo && !nuevos.length && !corregidos.length &&
-    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !detectados.mixInvalido && !escalado && !preguntaAmPm && !oferta7am && !preguntaRangoYardas
+    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !detectados.mixInvalido && !detectados.fechaInvalida && !escalado && !preguntaAmPm && !oferta7am && !preguntaRangoYardas
   ) {
     partes.push(prefijoContinuacion(flow, idioma));
   }
@@ -4037,6 +4215,13 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     // lista de los únicos mixes (los seis por PSI) y el flujo
     // vuelve a pedir el mix (el dato no se anotó).
     partes.push(lineaMixInvalido(idioma));
+  }
+  if (detectados.fechaInvalida) {
+    // El cliente dio un día que NO existe («32 de diciembre»,
+    // ronda 28): se le corrige — con cuántos días tiene el mes
+    // cuando se sabe — y el flujo vuelve a pedir el día (el
+    // dato inválido no se anotó y no se avanzó a la hora).
+    partes.push(lineaFechaInvalida(detectados.fechaInvalida, idioma));
   }
   if (escalado) {
     partes.push(textoEscalado(paso, flow.datos, idioma));
@@ -5667,6 +5852,7 @@ module.exports = {
   armarConfirmacion,
   fechaCortaEntrega,
   fechaEsDomingo,
+  fechaExplicitaInvalida,
   esPreguntaPrecio,
   preguntaSobreAire,
   recomendacionAire,
