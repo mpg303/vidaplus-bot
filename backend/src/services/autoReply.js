@@ -3670,6 +3670,9 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   if (!flow.idioma) flow.idioma = detectarIdioma(textoCliente);
   const idioma = flow.idioma;
   flow.turnos = (flow.turnos || 0) + 1;
+  // El cliente está activo AHORA: su marca de actividad se
+  // renueva (referencia de la caducidad de la ronda 29).
+  flow.ultimoMensajeClienteEn = new Date().toISOString();
   const pasoPedido = pasoActual(flow);
 
   // ACLARACIÓN DEL RANGO DE YARDAS en curso («¿son 90 o son
@@ -4282,6 +4285,10 @@ function flujoNuevo(tipo, textoCliente) {
     intentos: 0,
     intentosPaso: null,
     turnos: 0,
+    // Marca del último mensaje del cliente DENTRO de este flujo:
+    // es la referencia de la caducidad de la ronda 29 (si el
+    // cliente tarda más de 30 min en volver, el flujo se olvida).
+    ultimoMensajeClienteEn: new Date().toISOString(),
   };
 }
 
@@ -5524,6 +5531,43 @@ function saludoContinuacion(nombre, idioma = 'es') {
  * se anota si la conversación despertó (ctx.desperto) y el idioma
  * de la respuesta cuando ya se conoce (ctx.idioma).
  */
+/**
+ * CADUCIDAD DEL FLUJO EN CURSO (ronda 29, regla del dueño
+ * 2026-11-03 09:57: «Está bien si el cliente se va y regresar
+ * antes de 30 min. Puede seguir con la order, pero si no
+ * [regresa antes de 30 min], tiene que olvidar y comenzar de
+ * nuevo» / «Ya cuando pasa tanto tiempo se tiene que hacer una
+ * nueva conversación»): si desde el ÚLTIMO mensaje del cliente
+ * pasaron MÁS de 30 minutos, el flujo a medias (cotización u
+ * orden sin cerrar) CADUCA y se descarta completo. La referencia
+ * es la marca que el flujo guarda de su último mensaje del
+ * cliente (ultimoMensajeClienteEn, renovada en cada turno); un
+ * flujo guardado por una versión anterior, sin la marca, usa el
+ * penúltimo mensaje del cliente en la conversación (el último es
+ * el entrante, que el webhook ya guardó antes de decidir). Sin
+ * referencia legible NO se caduca: jamás se pierde una
+ * conversación por falta de reloj. Las órdenes ya completadas
+ * viven en el registro de órdenes, no en el flujo: no se tocan.
+ */
+const CADUCIDAD_FLUJO_MIN = 30;
+function flujoCaducado(conversacion) {
+  const flow = conversacion.flow;
+  if (!flow) return false;
+  let refMs = flow.ultimoMensajeClienteEn
+    ? Date.parse(flow.ultimoMensajeClienteEn)
+    : NaN;
+  if (Number.isNaN(refMs)) {
+    const delCliente = db
+      .getMessages(conversacion.id, 1000)
+      .filter((m) => m.sender === 'CLIENTE');
+    if (delCliente.length >= 2) {
+      refMs = Date.parse(delCliente[delCliente.length - 2].timestamp);
+    }
+  }
+  if (!refMs || Number.isNaN(refMs)) return false;
+  return Date.now() - refMs > CADUCIDAD_FLUJO_MIN * 60000;
+}
+
 function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text', ctx = {}) {
   const ultimoHumano = db.lastMessageFrom(conversacion.id, 'ESPECIALISTA');
   const minutosHumano = ultimoHumano
@@ -5609,10 +5653,34 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
   const intent = detectarIntent(textoCliente);
   const idiomaMsg = detectarIdioma(textoCliente);
 
+  // --- CADUCIDAD DEL FLUJO (ronda 29): si el cliente vuelve
+  // tras MÁS de 30 minutos de silencio, el flujo a medias se
+  // OLVIDA completo — datos, aclaraciones de hora, rangos y
+  // validaciones pendientes — y este mensaje se procesa como
+  // una conversación NUEVA, sin anunciar expiración alguna.
+  // Antes de 30 min el flujo ni se entera: sigue donde quedó.
+  // (Caso real que lo motivó: el flujo de la prueba del dueño
+  // quedó guardado un día entero con la fecha imposible de la
+  // ronda 28 y un «Hola» al día siguiente lo resucitó.)
+  if (
+    conversacion.flow &&
+    conversacion.flow.datos &&
+    flujoCaducado(conversacion)
+  ) {
+    db.setConversationFlow(conversacion.id, null);
+    conversacion.flow = null;
+  }
+
   // --- Flujo de cotización/pedido EN CURSO: tiene prioridad.
   // Las respuestas cortas se interpretan como el dato que se pidió;
   // jamás se cae al menú genérico a mitad del flujo.
   if (conversacion.flow && conversacion.flow.datos) {
+    // Actividad del cliente en este turno: la marca de la
+    // caducidad (ronda 29) se renueva también en las rutas del
+    // flujo que no pasan por manejarFlujo (la interrupción por
+    // una orden vieja, la elección del mix inicial…).
+    conversacion.flow.ultimoMensajeClienteEn = new Date().toISOString();
+    db.setConversationFlow(conversacion.id, conversacion.flow);
     const paso = pasoActual(conversacion.flow);
     // RONDA 27: la referencia a una orden («seguir con la
     // order 1») se detecta TAMBIÉN con un flujo activo, ANTES
