@@ -112,7 +112,7 @@ function baseConocimientoTexto() {
     `Precios por yarda SOLO para trabajos en Dallas: ${precios}. Todo total incluye los taxes de Texas del ${IMPUESTOS_PCT}%. El precio depende de la DIRECCIÓN del trabajo y del mix, nunca de la planta. Fuera de Dallas no hay total automático: lo confirma el equipo. La Pompa mix 50-50 no tiene total automático: lo confirma el equipo.`,
     `Servicio de pompa (boom pump o small line / trailer pump): no tiene precio definido; se coordina por obra y lo confirma el equipo.`,
     `Proceso de orden: para cotizar o pedir, el bot pide la cantidad de yardas, el mix, si lleva aire, si ocupa pompa, la dirección del trabajo, la fecha y la hora de entrega, el nombre y la compañía; con esos datos coloca primero la orden completa con los precios (en Dallas) y DESPUÉS pregunta el método de pago.`,
-    `Métodos de pago: efectivo, Zelle, tarjeta de débito, tarjeta de crédito y cheque. La tarjeta de crédito suma un cargo por procesamiento del ${RECARGO_CREDITO_PCT}% al total. El pago es por adelantado: en cuanto se confirma, se carga la orden.`,
+    `Métodos de pago: efectivo, Zelle, tarjeta de débito, tarjeta de crédito y cheque. La tarjeta de crédito suma un cargo por procesamiento del ${RECARGO_CREDITO_PCT}% al total. Solo el pago por Zelle se envía antes de cargar el concreto, a ${NEGOCIO.email}; el efectivo, la tarjeta de débito y el cheque NO se pagan por adelantado.`,
     `Los domingos por lo general no se trabaja: un pedido para domingo no se rechaza, se pasa al equipo como posible caso especial.`,
   ].join('\n');
 }

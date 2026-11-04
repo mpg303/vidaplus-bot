@@ -23,9 +23,14 @@
 // el cliente ya dio no se vuelven a pedir, y las respuestas cortas
 // a mitad del flujo se interpretan como el dato que se está
 // pidiendo (jamás se responde el menú genérico a mitad del flujo).
-// En el cierre se aclara UNA sola vez que el pago es POR
-// ADELANTADO (regla del dueño): en cuanto se confirme el pago se
-// carga la orden; el bot todavía NO pide ni envía datos de cobro.
+// PAGO (modelo FINAL del dueño, corregido 2026-11-04): NINGÚN
+// método se anuncia como «pago por adelantado» en general —
+// esa línea universal se quitó de los cierres y de la FAQ. La
+// ÚNICA instrucción de pagar antes de cargar es la de ZELLE,
+// en su nota de método (notaMetodoPago): se envía antes de
+// cargar, a Jmpconcreteanddispatchllc@gmail.com, pidiendo la
+// confirmación en el chat. Efectivo, débito y cheque no llevan
+// ninguna exigencia previa; crédito suma su 4% al total.
 // EFECTIVO: es un método más, SIN regla especial — el dueño
 // mandó OLVIDAR la regla de «efectivo antes de cargar» el
 // 2026-10-31 («Quiero que olvides la regla de cash o efectivo
@@ -478,10 +483,7 @@ function construirRespuesta(intentId, nombre, idioma = 'es') {
       // las CUATRO opciones del dueño (2026-10-21) — Zelle, tarjeta
       // de débito, tarjeta de crédito y efectivo. El efectivo ya no
       // lleva regla especial (el dueño la mandó olvidar el 2026-10-31).
-      return (
-        `¡Claro! 🙏 Aceptamos *Zelle*, *tarjeta de débito*, *tarjeta de crédito* y *efectivo*.\n` +
-        `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden.`
-      );
+      return `¡Claro! 🙏 Aceptamos *Zelle*, *tarjeta de débito*, *tarjeta de crédito* y *efectivo*.`;
     case 'faq_minimo':
       // El mínimo real depende de la dirección del trabajo: NO se inventa cifra.
       return (
@@ -574,11 +576,7 @@ function construirRespuestaEN(intentId, nombre) {
         `same chat. Thanks for your patience.`
       );
     case 'faq_pagos':
-      return (
-        `Yes 🙏 We accept *Zelle*, *debit card*, *credit card* and *cash*.\n` +
-        `Payment is in advance: as soon as your payment is confirmed, ` +
-        `we load your order.`
-      );
+      return `Yes 🙏 We accept *Zelle*, *debit card*, *credit card* and *cash*.`;
     case 'faq_minimo':
       return (
         `The minimum yardage is confirmed by the specialist, since it ` +
@@ -2623,17 +2621,16 @@ function preguntaCuandoPedir(texto) {
 
 /** Respuesta a «¿cuándo debo pedirlo?» (sin precios, regla del dueño). */
 const LINEA_CUANDO_PEDIR_ES =
-  'Puede pedirlo desde hoy mismo: en cuanto se confirma su pago por adelantado, su orden queda agendada para el día que usted elija.';
+  'Puede pedirlo desde hoy mismo: su orden queda agendada para el día que usted elija.';
 const LINEA_CUANDO_PEDIR_EN =
-  'You can order starting today: as soon as your advance payment is confirmed, your order is scheduled for the day you choose.';
+  'You can order starting today: your order is scheduled for the day you choose.';
 
 /**
  * ¿El cliente pregunta por el MOMENTO del pago? («¿pago el día
- * del trabajo o debo pagar antes?») — pregunta directa sobre la
- * regla del dueño (el pago es POR ADELANTADO): se responde
- * directo y el flujo retoma el paso en que iba; antes la
- * pregunta se ignoraba y el bot seguía con otra cosa (falla
- * real 2026-10-22).
+ * del trabajo o debo pagar antes?») — pregunta directa sobre el
+ * modelo de pago del dueño: se responde directo y el flujo
+ * retoma el paso en que iba; antes la pregunta se ignoraba y
+ * el bot seguía con otra cosa (falla real 2026-10-22).
  */
 function preguntaPagoAdelantado(texto) {
   const t = normalizar(texto);
@@ -2651,14 +2648,17 @@ function preguntaPagoAdelantado(texto) {
 }
 
 /**
- * Respuesta a la pregunta del momento del pago: es el mismo
- * texto del cierre aprobado por el dueño (ver resumenCliente y
- * la FAQ de pagos).
+ * Respuesta a la pregunta del momento del pago (modelo FINAL
+ * del dueño, corregido 2026-11-04): NO hay pago por adelantado
+ * como regla general — el único método que se envía antes de
+ * cargar es Zelle (su nota va en el cierre al elegirlo); el
+ * efectivo, la tarjeta y el cheque no se pagan por adelantado.
+ * (Las constantes conservan el nombre histórico.)
  */
 const LINEA_PAGO_ADELANTADO_ES =
-  'El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden.';
+  'Solo el pago por *Zelle* se envía antes de cargar el concreto; el efectivo, la tarjeta y el cheque no se pagan por adelantado.';
 const LINEA_PAGO_ADELANTADO_EN =
-  'Payment is in advance: as soon as your payment is confirmed, we load your order.';
+  'Only *Zelle* payments are sent before we load the concrete; cash, card and check are not paid in advance.';
 
 /**
  * La pregunta por el dato que falta, en el orden del dueño.
@@ -3170,7 +3170,7 @@ function calcularTotalParaMix(datos, mix) {
   if (!direccionEsDallas(datos.direccion)) return null;
   const yardas = parseFloat(String(datos.yardas.cantidad).replace(',', '.'));
   if (!isFinite(yardas) || yardas <= 0) return null;
-  if (mix === 'Pompa mix 50-50') return null;
+  if (mix === 'Pompa mix 50-50' || mix === 'Trailer pump mix 50-50') return null;
   const precioYarda = PRECIOS_MIX[mix];
   if (!(precioYarda > 0)) return null;
   let total = yardas * precioYarda;
@@ -3428,16 +3428,16 @@ function resumenCliente(datos, nombre, idioma = 'es') {
       `• Mix: ${mixVisible(datos, 'en')}${datos.aire ? `, ${aireDisplay(datos.aire, idioma)}` : ''}\n` +
       (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente' ? `• Pump: ${datos.pompa}\n` : '') +
       `• Address: ${datos.direccion}\n` +
-      `• Day: ${datos.fecha} — ${datos.hora}\n` +
+      `• Day: ${fechaConDiaSemana(datos.fecha, 'en')} — ${datos.hora}\n` +
       (datos.pago ? `• Payment: ${pagoDisplay(datos.pago, idioma)}\n` : '') +
       (bloquePrecios
         ? `\n${bloquePrecios}\n` + (bloqueCredito ? `${bloqueCredito}\n` : '') + `A specialist will help you right here. 🙏\n`
         : `\nWe'll confirm price and availability right away. ` +
           `A specialist will help you right here. 🙏\n`) +
-      // Same rule as in Spanish: payment is IN ADVANCE, said once.
-      (esPagoEfectivo(datos.pago)
-        ? ''
-        : `Payment is in advance: as soon as your payment is confirmed, we load your order. 🚛`) +
+      // (Sin línea de «pago por adelantado»: no es regla
+      // general — solo Zelle se envía antes de cargar, y eso
+      // va en su nota de método. Corrección del dueño,
+      // 2026-11-04.)
       // Nota del método (cheque/Zelle; el crédito ya trae su
       // total con el cargo en el bloque de arriba), si aplica.
       (notaMetodoPago(datos.pago, 'en') && !bloqueCredito ? `\n${notaMetodoPago(datos.pago, 'en')}` : '')
@@ -3450,18 +3450,16 @@ function resumenCliente(datos, nombre, idioma = 'es') {
     `• Mix: ${mixVisible(datos, 'es')}${datos.aire ? `, ${datos.aire}` : ''}\n` +
     (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente' ? `• Pompa: ${datos.pompa}\n` : '') +
     `• Dirección: ${datos.direccion}\n` +
-    `• Día: ${datos.fecha} — ${datos.hora}\n` +
+    `• Día: ${fechaConDiaSemana(datos.fecha, 'es')} — ${datos.hora}\n` +
     (datos.pago ? `• Pago: ${datos.pago}\n` : '') +
     (bloquePrecios
       ? `\n${bloquePrecios}\n` + (bloqueCredito ? `${bloqueCredito}\n` : '') + `Un especialista le atiende por aquí mismo. 🙏\n`
       : `\nLe confirmamos precio y disponibilidad en seguida. ` +
         `Un especialista le atiende por aquí mismo. 🙏\n`) +
-    // Regla del dueño: el pago es POR ADELANTADO. Se avisa UNA
-    // sola vez, aquí en el cierre (no en la pregunta del pago);
-    // el bot todavía no pide ni envía datos de cobro.
-    (esPagoEfectivo(datos.pago)
-      ? ''
-      : `El pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛`) +
+    // (Sin línea de «pago por adelantado»: no es regla
+    // general — solo Zelle se envía antes de cargar, y eso
+    // va en su nota de método. Corrección del dueño,
+    // 2026-11-04.)
     // Nota del método (cheque: taxes 8.25%; Zelle: enviarlo
     // antes de cargar, al correo de JMP; el crédito ya trae su
     // total con el cargo en el bloque de precios).
@@ -3474,7 +3472,9 @@ function resumenCliente(datos, nombre, idioma = 'es') {
  * la orden va primero y la pregunta del pago después): al
  * responder el método no se repite toda la orden; se confirma
  * el pago con su nota (crédito 4% / cheque taxes / Zelle antes
- * de cargar) y la regla del pago por adelantado. La orden
+ * de cargar — la ÚNICA instrucción de pagar antes de cargar;
+ * ningún método se anuncia como «pago por adelantado» en
+ * general, corrección del dueño 2026-11-04). La orden
  * completa, con «Pago:» y totales, queda en la confirmación
  * armada para el dueño.
  */
@@ -3486,9 +3486,6 @@ function textoCierreTrasOrden(datos, nombre, idioma = 'es') {
       (datos.numeroOrden ? `\nYour order number is *${datos.numeroOrden}*.` : '') +
       (notaMetodoPago(datos.pago, 'en') ? `\n${notaMetodoPago(datos.pago, 'en')}` : '') +
       (bloqueTotalCredito(datos, 'en') ? `\n${bloqueTotalCredito(datos, 'en')}` : '') +
-      (esPagoEfectivo(datos.pago)
-        ? ''
-        : `\nPayment is in advance: as soon as your payment is confirmed, we load your order. 🚛`) +
       `\nA specialist will help you right here. 🙏`
     );
   }
@@ -3497,9 +3494,6 @@ function textoCierreTrasOrden(datos, nombre, idioma = 'es') {
     (datos.numeroOrden ? `\nSu número de orden es el *${datos.numeroOrden}*.` : '') +
     (notaMetodoPago(datos.pago, 'es') ? `\n${notaMetodoPago(datos.pago, 'es')}` : '') +
     (bloqueTotalCredito(datos, 'es') ? `\n${bloqueTotalCredito(datos, 'es')}` : '') +
-    (esPagoEfectivo(datos.pago)
-      ? ''
-      : `\nEl pago es por adelantado: en cuanto se confirme su pago, cargamos su orden. 🚛`) +
     `\nUn especialista le atiende por aquí mismo. 🙏`
   );
 }
@@ -3902,6 +3896,23 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const { aplicados: nuevos, corregidos } = omitirCaptura
     ? { aplicados: [], corregidos: [] }
     : fusionarDatos(flow, detectados);
+
+  // MIX DEL TRAILER PUMP (orden del dueño, 2026-11-04): si la
+  // orden lleva Small line / Trailer pump, el mix de la orden
+  // ES el «Trailer pump mix 50-50» — reemplaza al psi que se
+  // hubiera pedido, en el flujo y en el resumen final (en la
+  // prueba en vivo del dueño el resumen salió «Mix: 5000 psi»
+  // con pompa trailer, y eso estaba mal). Aplica igual si el
+  // trailer pump se mencionó en captura libre, en cualquier
+  // paso. La BOOM pump NO dispara el cambio: con boom se queda
+  // el mix psi pedido. Sin discurso extra: la confirmación de
+  // este turno (si el mix se anotó ahora) y el resumen ya lo
+  // traen. Precios SIN cambio: con servicio de pompa la orden
+  // ya cierra sin total, y este mix no tiene precio automático
+  // (ver la guarda en precioYarda).
+  if (flow.datos.pompa === 'Small line / Trailer pump' && !flow.datos.mixesCotizacion) {
+    flow.datos.mix = 'Trailer pump mix 50-50';
+  }
 
   // INVARIANTE DE MIXES (red de seguridad permanente, 2026-10-31):
   // ningún psi fuera de la lista oficial {3000, 3500, 3600, 4000,
@@ -4413,9 +4424,9 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   }
   if (cuandoPedir) {
     // Respuesta a «¿cuándo debo pedirlo?»: puede pedir desde
-    // hoy; en cuanto se confirma su pago por adelantado, la
-    // orden queda agendada. El flujo sigue pidiendo el día
-    // concreto (la pregunta del paso va al final, como siempre).
+    // hoy y la orden queda agendada para el día que elija. El
+    // flujo sigue pidiendo el día concreto (la pregunta del
+    // paso va al final, como siempre).
     partes.push(idioma === 'en' ? LINEA_CUANDO_PEDIR_EN : LINEA_CUANDO_PEDIR_ES);
   }
   if (noSabe && !detectados.medidas) {

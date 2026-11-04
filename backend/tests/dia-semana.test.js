@@ -224,6 +224,119 @@ function hastaFechaEN(waId) {
     bot.resolverFechaMs('el 20') === bot.resolverFechaMs('20 de noviembre'));
 }
 
+/** Orden completa de Dallas (5000 psi) hasta el paso del pago. */
+function ordenHastaPago(waId, pasosPompa) {
+  let conv = nuevaConv(waId, 'Cliente Cierre');
+  let r;
+  const pasos = ['Hola, necesito concreto', '7 yds', '5000 psi', 'No aire', ...pasosPompa,
+    '3069 forest ln Dallas tx', '20 de noviembre', '7:00', 'Am', 'Jesús Morillo', 'No tengo'];
+  for (const p of pasos) { r = turno(conv, p); conv = r.conv; }
+  return { conv, r };
+}
+
+// ---------------------------------------------------------------
+// (9) CIERRE Y PAGO (segunda orden del dueño, 2026-11-04): el
+// resumen trae el día de semana en la línea «Día:» y NINGÚN
+// cierre anuncia «pago por adelantado» como regla general —
+// la única instrucción de pagar antes de cargar es la de
+// Zelle al elegirlo. (Antes el resumen mostrado ANTES de
+// preguntar el método ya traía la línea universal.)
+// ---------------------------------------------------------------
+{
+  const { conv, r } = ordenHastaPago('30000001009', ['No']);
+  check('CP-1: la línea «Día:» del resumen lleva el día de semana',
+    (r.d.texto || '').includes(`• Día: ${bot.fechaConDiaSemana('20 de noviembre', 'es')} — 7:00 am`),
+    r.d.texto);
+  check('CP-2: el resumen previo a la pregunta del método NO anuncia pago por adelantado',
+    !(r.d.texto || '').includes('por adelantado'), r.d.texto);
+  const rr = turno(conv, 'Efectivo');
+  check('CP-3: cierre con EFECTIVO: sin «por adelantado» y sin exigencia de pagar antes de cargar',
+    !(rr.d.texto || '').includes('por adelantado') &&
+    !(rr.d.texto || '').includes('antes de que carguemos') &&
+    (rr.d.texto || '').includes('pago en *Efectivo*'), rr.d.texto);
+}
+{
+  const { conv } = ordenHastaPago('30000001010', ['No']);
+  const rr = turno(conv, 'Zelle');
+  check('CP-4: cierre con ZELLE: SÍ trae la instrucción de enviarlo ANTES de cargar, al correo de JMP',
+    (rr.d.texto || '').includes('antes* de que carguemos el concreto') &&
+    (rr.d.texto || '').includes('Jmpconcreteanddispatchllc@gmail.com') &&
+    (rr.d.texto || '').includes('confirmación de la transferencia'), rr.d.texto);
+  check('CP-5: cierre con ZELLE: tampoco trae la línea universal «El pago es por adelantado»',
+    !(rr.d.texto || '').includes('El pago es por adelantado'), rr.d.texto);
+}
+{
+  let conv = hastaFecha('30000001011');
+  const r = turno(conv, '¿Tengo que pagar por adelantado?');
+  check('CP-6: la pregunta por el momento del pago se responde con el modelo final (solo Zelle va antes)',
+    (r.d.texto || '').includes('Solo el pago por *Zelle* se envía antes de cargar') &&
+    !(r.d.texto || '').includes('El pago es por adelantado: en cuanto'), r.d.texto);
+}
+{
+  // EN: la línea «Day:» del resumen también lleva el día de semana.
+  let conv = nuevaConv('30000001012', 'Client Closing');
+  let r;
+  const pasos = ['Hi, I need concrete', '7 yds', '5000 psi', 'No air', 'No',
+    '3069 forest ln Dallas tx', 'November 20', '7:00', 'Am', 'John Smith', 'None'];
+  for (const p of pasos) { r = turno(conv, p); conv = r.conv; }
+  check('CP-7: EN — la línea «Day:» del resumen lleva el día de semana y no hay «in advance»',
+    (r.d.texto || '').includes(`• Day: ${bot.fechaConDiaSemana('November 20', 'en')} — 7:00 am`) &&
+    !(r.d.texto || '').includes('Payment is in advance'), r.d.texto);
+}
+
+// ---------------------------------------------------------------
+// (10) TRAILER PUMP → MIX «Trailer pump mix 50-50» (tercera
+// orden del dueño, 2026-11-04): al elegir Small line /
+// Trailer pump, el mix de la orden pasa a ser ese, en el
+// flujo y en el resumen; la orden sigue cerrando SIN total
+// (el servicio de pompa no tiene precio definido).
+// ---------------------------------------------------------------
+{
+  const { conv, r } = ordenHastaPago('30000001013', ['Sí', 'Tráiler']);
+  check('TP-1: con trailer pump, el mix guardado es «Trailer pump mix 50-50»',
+    conv.flow.datos.mix === 'Trailer pump mix 50-50' &&
+    conv.flow.datos.pompa === 'Small line / Trailer pump',
+    JSON.stringify(conv.flow.datos));
+  check('TP-2: el resumen muestra «Mix: Trailer pump mix 50-50» y ya no el psi pedido',
+    (r.d.texto || '').includes('• Mix: Trailer pump mix 50-50') &&
+    !(r.d.texto || '').includes('5000 psi'), r.d.texto);
+  const rr = turno(conv, 'Efectivo');
+  check('TP-3: la confirmación armada trae el mix trailer y la orden cierra SIN total',
+    (rr.d.confirmacionArmada || '').includes('Trailer pump mix 50-50') &&
+    !(rr.d.confirmacionArmada || '').includes('Total:'), rr.d.confirmacionArmada);
+}
+{
+  // Captura libre: el trailer pump mencionado en un solo
+  // mensaje con todo lo demás también cambia el mix, y la
+  // confirmación de ese mismo turno ya lo refleja.
+  let conv = nuevaConv('30000001014', 'Cliente Libre');
+  const r = turno(conv, 'Hola, necesito 7 yardas de 5000 psi sin aire, con trailer pump, en 3069 forest ln Dallas tx, el 20 de noviembre a las 7 am');
+  check('TP-4: captura libre con trailer pump: el mix queda «Trailer pump mix 50-50»',
+    r.conv.flow.datos.mix === 'Trailer pump mix 50-50', JSON.stringify(r.conv.flow.datos));
+  check('TP-5: la confirmación del mismo turno ya dice el mix trailer (sin discurso extra)',
+    (r.d.texto || '').includes('anotado el mix: *Trailer pump mix 50-50*'), r.d.texto);
+}
+
+// ---------------------------------------------------------------
+// (11) BOOM PUMP Y SIN POMPA: el mix psi se CONSERVA.
+// ---------------------------------------------------------------
+{
+  const { conv } = ordenHastaPago('30000001015', ['Sí', 'Boom']);
+  check('TP-6: con BOOM pump el mix sigue siendo el psi pedido (5000 psi)',
+    conv.flow.datos.mix === '5000 psi' && conv.flow.datos.pompa === 'Boom pump',
+    JSON.stringify(conv.flow.datos));
+  const rr = turno(conv, 'Efectivo');
+  check('TP-7: la armada con boom trae «5000 psi … (Boom pump)»',
+    (rr.d.confirmacionArmada || '').includes('5000 psi') &&
+    (rr.d.confirmacionArmada || '').includes('(Boom pump)'), rr.d.confirmacionArmada);
+}
+{
+  const { conv } = ordenHastaPago('30000001016', ['No']);
+  check('TP-8: SIN pompa el mix sigue siendo el psi pedido (5000 psi)',
+    conv.flow.datos.mix === '5000 psi' && conv.flow.datos.pompa === 'Sin pompa',
+    JSON.stringify(conv.flow.datos));
+}
+
 console.log('');
 if (fallos.length) {
   console.log(`dia-semana: ${ok}/${total}`);
