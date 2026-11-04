@@ -43,6 +43,9 @@ function vacia() {
     contadorOrdenes: 0, // correlativo del número de orden NUESTRO que el bot emite al completarse cada orden (orden del dueño, 2026-11-01)
     orders: [],        // REGISTRO PERMANENTE de órdenes listas (pestaña «Órdenes» del panel, orden del dueño 2026-11-01):
                        // una entrada por orden completada, clave (conversationId, numeroOrden); ver registrarOrden.
+    prompts: [],       // PROMPTS instalados desde el panel (sección «🧩 Prompts», orden del dueño 2026-11-03):
+                       // [{ id, nombre, texto, activo, creadoEn, actualizadoEn }] — a lo sumo UNO activo a la vez;
+                       // la capa services/iaPrompts.js lo usa solo en mensajes «otro» y solo si hay clave IA.
   };
 }
 
@@ -64,6 +67,7 @@ function load() {
   }
   if (!cache.replies) cache.replies = {}; // bases creadas antes del editor de respuestas
   if (!Array.isArray(cache.orders)) cache.orders = []; // bases creadas antes del registro de órdenes
+  if (!Array.isArray(cache.prompts)) cache.prompts = []; // bases creadas antes de la sección de prompts
   return cache;
 }
 
@@ -182,6 +186,7 @@ async function hydrate() {
       cache = Object.assign(vacia(), remote);
       if (!cache.replies) cache.replies = {};
       if (!Array.isArray(cache.orders)) cache.orders = [];
+      if (!Array.isArray(cache.prompts)) cache.prompts = [];
       saveLocal();
       console.log('[db] Supabase: estado cargado desde la base permanente.');
     } else {
@@ -751,6 +756,90 @@ function clearReplyOverride(intentId) {
   save();
 }
 
+// ---------------- Prompts instalados (sección «🧩 Prompts» del panel) ----------------
+// Orden del dueño (2026-11-03): «coloca uno para colocar los
+// prompts y identificar qué prompts tiene instalados, así
+// podemos ir probando cada uno». Cada prompt: { id, nombre,
+// texto, activo, creadoEn, actualizadoEn }. A lo sumo UNO
+// activo a la vez: activar uno apaga todos los demás. La capa
+// services/iaPrompts.js usa SOLO el activo, y solo cuando el
+// bot no entendió un mensaje (intent «otro»).
+
+/** Lista de prompts instalados, en orden de instalación. */
+function listPrompts() {
+  const d = load();
+  if (!Array.isArray(d.prompts)) d.prompts = [];
+  return d.prompts.slice();
+}
+
+/** El prompt activo (activo === true), o null si ninguno está activo. */
+function getPromptActivo() {
+  return listPrompts().find((p) => p.activo) || null;
+}
+
+function createPrompt({ nombre, texto }) {
+  const d = load();
+  if (!Array.isArray(d.prompts)) d.prompts = [];
+  const ahora = ahoraIso();
+  const p = {
+    id: uid('prompt'),
+    nombre: String(nombre || '').trim(),
+    texto: String(texto || '').trim(),
+    activo: false, // nace apagado: el dueño lo activa cuando quiere probarlo
+    creadoEn: ahora,
+    actualizadoEn: ahora,
+  };
+  d.prompts.push(p);
+  save();
+  return p;
+}
+
+function updatePrompt(id, { nombre, texto }) {
+  const d = load();
+  if (!Array.isArray(d.prompts)) d.prompts = [];
+  const p = d.prompts.find((x) => x.id === id);
+  if (!p) return null;
+  if (nombre !== undefined) p.nombre = String(nombre || '').trim();
+  if (texto !== undefined) p.texto = String(texto || '').trim();
+  p.actualizadoEn = ahoraIso();
+  save();
+  return p;
+}
+
+/** Activa SOLO este prompt: todos los demás quedan inactivos. */
+function setPromptActivo(id) {
+  const d = load();
+  if (!Array.isArray(d.prompts)) d.prompts = [];
+  const p = d.prompts.find((x) => x.id === id);
+  if (!p) return null;
+  for (const x of d.prompts) x.activo = x.id === id;
+  p.actualizadoEn = ahoraIso();
+  save();
+  return p;
+}
+
+/** Desactiva un prompt (si era el activo, ninguno queda activo). */
+function setPromptInactivo(id) {
+  const d = load();
+  if (!Array.isArray(d.prompts)) d.prompts = [];
+  const p = d.prompts.find((x) => x.id === id);
+  if (!p) return null;
+  p.activo = false;
+  p.actualizadoEn = ahoraIso();
+  save();
+  return p;
+}
+
+function deletePrompt(id) {
+  const d = load();
+  if (!Array.isArray(d.prompts)) d.prompts = [];
+  const antes = d.prompts.length;
+  d.prompts = d.prompts.filter((x) => x.id !== id);
+  if (d.prompts.length === antes) return false;
+  save();
+  return true;
+}
+
 module.exports = {
   load,
   save,
@@ -789,4 +878,11 @@ module.exports = {
   createSession,
   validSession,
   destroySession,
+  listPrompts,
+  getPromptActivo,
+  createPrompt,
+  updatePrompt,
+  setPromptActivo,
+  setPromptInactivo,
+  deletePrompt,
 };

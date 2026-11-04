@@ -17,7 +17,8 @@ const crypto = require('crypto');
 const { cfg } = require('../config');
 const db = require('../db');
 const { sendText, markAsRead } = require('../services/send');
-const { decidirRespuesta } = require('../services/autoReply');
+const { decidirRespuesta, detectarIdioma } = require('../services/autoReply');
+const iaPrompts = require('../services/iaPrompts');
 const { enviarFormaTarjeta, mensajeInstruccionesForma } = require('../services/formaTarjeta');
 const followup = require('../services/followup');
 
@@ -141,6 +142,21 @@ async function procesarMensajeEntrante(msg, nombrePerfil) {
   //    que no es texto jamás debe guardarse como dato del flujo;
   //    el bot pide el dato en texto.
   const decision = decidirRespuesta(conv, texto, msg.type || 'text');
+
+  // 2b. CAPA DE PROMPTS IA (sección «🧩 Prompts» del panel):
+  //     SOLO si la decisión es «otro» (ningún flujo fijo cubrió
+  //     el mensaje) y es un texto real, se consulta el prompt
+  //     ACTIVO del dueño. Si la capa devuelve texto, sustituye
+  //     SOLO el texto de la decisión; intent, seguimiento y
+  //     demás comportamiento quedan como siempre. Sin clave IA
+  //     o sin prompt activo devuelve null y nada cambia.
+  if (iaPrompts.debeConsultarIA(decision, msg.type || 'text')) {
+    const r = await iaPrompts.responderConPromptActivo({
+      texto,
+      idioma: detectarIdioma(texto),
+    });
+    if (r && r.texto) decision.texto = r.texto;
+  }
 
   if (!decision.responder) {
     // Hay humano activo o bot pausado: no interrumpir.

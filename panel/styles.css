@@ -294,3 +294,12 @@ body {
 .orders-day { margin: 1.2rem 0 .6rem; color: var(--azul); text-transform: capitalize; }
 .order-card .camp-stats { flex-wrap: wrap; }
 .order-detail { white-space: pre-wrap; word-break: break-word; background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 1rem; margin: .8rem 0 0; font-size: .9rem; }
+
+/* ===== Prompts del bot (capa IA) ===== */
+.prompt-form { width: 100%; min-width: 0; max-width: 640px; margin-bottom: 1.2rem; }
+.prompt-preview { white-space: pre-wrap; word-break: break-word; background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: .7rem .9rem; font-size: .9rem; color: #1c2733; }
+.prompt-edit label { display: block; margin: 10px 0; font-size: .9rem; font-weight: 600; }
+.prompt-edit input[type="text"], .prompt-edit textarea { width: 100%; box-sizing: border-box; margin-top: 4px; border: 1px solid #d5dce6; border-radius: 8px; padding: .55rem .6rem; font-size: 1rem; font-weight: 400; }
+.support-credit { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #e6e9f0; color: #5b6472; font-size: 12.5px; }
+.support-credit img { width: 28px; height: 28px; border-radius: 7px; object-fit: cover; }
+.support-credit strong { color: #14324f; }

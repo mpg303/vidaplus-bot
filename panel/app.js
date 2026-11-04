@@ -84,9 +84,11 @@ document.querySelectorAll('.tab[data-tab]').forEach((btn) => {
     document.getElementById('tab-orders').classList.toggle('hidden', btn.dataset.tab !== 'orders');
     document.getElementById('tab-campaigns').classList.toggle('hidden', btn.dataset.tab !== 'campaigns');
     document.getElementById('tab-replies').classList.toggle('hidden', btn.dataset.tab !== 'replies');
+    document.getElementById('tab-prompts').classList.toggle('hidden', btn.dataset.tab !== 'prompts');
     if (btn.dataset.tab === 'orders') cargarOrdenes();
     if (btn.dataset.tab === 'campaigns') cargarCampanas();
     if (btn.dataset.tab === 'replies') cargarRespuestas();
+    if (btn.dataset.tab === 'prompts') cargarPrompts();
   });
 });
 
@@ -485,6 +487,165 @@ function pintarOrdenes() {
 document.getElementById('ord-q').addEventListener('input', pintarOrdenes);
 document.getElementById('ord-fecha').addEventListener('change', pintarOrdenes);
 document.getElementById('ord-refresh').addEventListener('click', cargarOrdenes);
+
+// ---------------- Prompts del bot (capa IA) ----------------
+// Instalar prompts con nombre, ver los instalados, activar
+// UNO a la vez para probarlo, editar y eliminar. El backend
+// guarda todo en el estado del bot (GET/POST/PUT/DELETE
+// /api/prompts). Eliminar usa confirmación EN LA PÁGINA de
+// dos toques: nunca diálogos del navegador.
+function mostrarErrorPrompt(msg) {
+  const err = document.getElementById('prompt-error');
+  err.textContent = msg;
+  err.classList.remove('hidden');
+  document.getElementById('prompt-ok').classList.add('hidden');
+}
+function mostrarOkPrompt(msg) {
+  const ok = document.getElementById('prompt-ok');
+  ok.textContent = msg;
+  ok.classList.remove('hidden');
+  document.getElementById('prompt-error').classList.add('hidden');
+}
+
+async function cargarPrompts() {
+  const box = document.getElementById('prompts-list');
+  const estado = document.getElementById('prompts-estado');
+  try {
+    const data = await api('/api/prompts');
+    estado.innerHTML = data.iaActiva
+      ? '✅ <strong>Clave de IA conectada:</strong> el bot SÍ está usando el prompt activo en los mensajes que no entiende.'
+      : '⚠️ <strong>Sin clave de IA conectada: los prompts quedan instalados pero el bot aún no los usa.</strong>';
+    const items = data.prompts || [];
+    box.innerHTML = items.length ? '' : '<p class="hint">Aún no hay prompts instalados. Instale el primero con el formulario de arriba.</p>';
+    for (const p of items) {
+      const card = document.createElement('div');
+      card.className = 'camp-card prompt-card';
+      const previo = p.texto.length > 160 ? p.texto.slice(0, 160) + '…' : p.texto;
+      card.innerHTML = `
+        <h3>${esc(p.nombre)} ${p.activo ? '<span class="pill ok">🟢 ACTIVO</span>' : ''}</h3>
+        <div class="camp-stats">
+          <span>Instalado: <b>${esc(horaCorta(p.creadoEn))}</b></span>
+          ${p.actualizadoEn && p.actualizadoEn !== p.creadoEn ? `<span>Editado: <b>${esc(horaCorta(p.actualizadoEn))}</b></span>` : ''}
+        </div>
+        <p class="prompt-preview">${esc(previo)}</p>
+        <div class="reply-actions">
+          ${p.activo
+            ? `<button class="btn-small warn" data-desactivar="${p.id}">⏸️ Desactivar</button>`
+            : `<button class="btn-small" data-activar="${p.id}">▶️ Activar</button>`}
+          <button class="btn-small" data-editar="${p.id}">✏️ Editar</button>
+          <button class="btn-small warn" data-eliminar="${p.id}">🗑️ Eliminar</button>
+        </div>
+        <div class="prompt-edit hidden">
+          <label>Nombre del prompt
+            <input type="text" class="prompt-edit-nombre" maxlength="80" value="${esc(p.nombre)}">
+          </label>
+          <label>Texto del prompt
+            <textarea class="prompt-edit-texto" rows="6">${esc(p.texto)}</textarea>
+          </label>
+          <div class="reply-actions">
+            <button class="btn-primary btn-small" data-guardar="${p.id}">💾 Guardar cambios</button>
+            <button class="btn-small" data-cancelar="${p.id}">Cancelar</button>
+          </div>
+        </div>`;
+      box.appendChild(card);
+    }
+    box.querySelectorAll('[data-activar]').forEach((b) =>
+      b.addEventListener('click', () => accionPrompt(`/api/prompts/${b.dataset.activar}/activar`)));
+    box.querySelectorAll('[data-desactivar]').forEach((b) =>
+      b.addEventListener('click', () => accionPrompt(`/api/prompts/${b.dataset.desactivar}/desactivar`)));
+    box.querySelectorAll('[data-editar]').forEach((b) =>
+      b.addEventListener('click', () => {
+        b.closest('.prompt-card').querySelector('.prompt-edit').classList.toggle('hidden');
+      }));
+    box.querySelectorAll('[data-cancelar]').forEach((b) =>
+      b.addEventListener('click', () => cargarPrompts()));
+    box.querySelectorAll('[data-guardar]').forEach((b) =>
+      b.addEventListener('click', () => guardarPromptEditado(b)));
+    box.querySelectorAll('[data-eliminar]').forEach((b) =>
+      b.addEventListener('click', () => eliminarPrompt(b)));
+  } catch (e) {
+    box.innerHTML = '<p class="error">No se pudieron cargar los prompts: ' + esc(e.message) + '</p>';
+  }
+}
+
+async function accionPrompt(path) {
+  try {
+    await api(path, { method: 'POST', body: '{}' });
+    cargarPrompts();
+  } catch (e) {
+    mostrarErrorPrompt('No se pudo completar la acción: ' + e.message);
+  }
+}
+
+async function guardarPromptEditado(btn) {
+  const card = btn.closest('.prompt-card');
+  const nombre = card.querySelector('.prompt-edit-nombre').value.trim();
+  const texto = card.querySelector('.prompt-edit-texto').value.trim();
+  btn.disabled = true;
+  try {
+    await api(`/api/prompts/${btn.dataset.guardar}`, {
+      method: 'PUT',
+      body: JSON.stringify({ nombre, texto }),
+    });
+    mostrarOkPrompt('✅ Prompt actualizado.');
+    cargarPrompts();
+  } catch (e) {
+    mostrarErrorPrompt('No se pudo guardar: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+// Eliminar con confirmación EN LA PÁGINA (dos toques): el
+// primer toque arma el botón por 4 segundos; solo un segundo
+// toque dentro de ese tiempo elimina el prompt.
+function eliminarPrompt(btn) {
+  if (btn.dataset.armado === '1') {
+    btn.disabled = true;
+    api(`/api/prompts/${btn.dataset.eliminar}`, { method: 'DELETE' })
+      .then(() => {
+        mostrarOkPrompt('🗑️ Prompt eliminado.');
+        cargarPrompts();
+      })
+      .catch((e) => mostrarErrorPrompt('No se pudo eliminar: ' + e.message));
+    return;
+  }
+  btn.dataset.armado = '1';
+  const original = btn.textContent;
+  btn.textContent = '¿Seguro? Toque de nuevo para eliminar';
+  setTimeout(() => {
+    if (btn.isConnected) {
+      btn.dataset.armado = '';
+      btn.textContent = original;
+    }
+  }, 4000);
+}
+
+document.getElementById('prompt-instalar').addEventListener('click', async () => {
+  const nombreEl = document.getElementById('prompt-nombre');
+  const textoEl = document.getElementById('prompt-texto');
+  const nombre = nombreEl.value.trim();
+  const texto = textoEl.value.trim();
+  if (!nombre || !texto) {
+    mostrarErrorPrompt('Escriba el nombre y el texto del prompt.');
+    return;
+  }
+  const btn = document.getElementById('prompt-instalar');
+  btn.disabled = true;
+  try {
+    await api('/api/prompts', {
+      method: 'POST',
+      body: JSON.stringify({ nombre, texto }),
+    });
+    nombreEl.value = '';
+    textoEl.value = '';
+    mostrarOkPrompt('✅ Prompt instalado. Nace apagado: actívelo en la lista cuando quiera probarlo.');
+    cargarPrompts();
+  } catch (e) {
+    mostrarErrorPrompt('No se pudo instalar: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ---------------- Arranque ----------------
 if (token()) mostrarApp();

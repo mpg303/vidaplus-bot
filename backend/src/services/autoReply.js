@@ -5915,6 +5915,13 @@ module.exports = {
   listarRespuestas,
   esIntentValido,
   INTENTS,
+  // Datos verificados del negocio (los reutiliza la capa de
+  // prompts IA, services/iaPrompts.js, como su base de
+  // conocimiento: son la MISMA fuente de verdad, sin duplicar
+  // cifras en otro archivo):
+  PRECIOS_MIX,
+  IMPUESTOS_PCT,
+  RECARGO_CREDITO_PCT,
   // Exportados para pruebas del flujo:
   extraerDatos,
   armarConfirmacion,

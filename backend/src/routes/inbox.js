@@ -26,6 +26,7 @@ const { enviarEncuesta } = require('../services/survey');
 const followup = require('../services/followup');
 const campaign = require('../services/campaign');
 const autoReply = require('../services/autoReply');
+const iaPrompts = require('../services/iaPrompts');
 
 const router = express.Router();
 
@@ -219,6 +220,76 @@ router.post('/replies/:id/reset', (req, res) => {
   }
   db.clearReplyOverride(id);
   res.json({ ok: true, item: autoReply.listarRespuestas().find((r) => r.id === id) });
+});
+
+// ---- Prompts del bot (sección «🧩 Prompts» del panel) ----
+// El dueño instala prompts con nombre y activa UNO a la vez
+// para probarlo (db.prompts). La capa services/iaPrompts.js
+// usa solo el activo, solo en mensajes «otro» y solo si hay
+// clave IA conectada (iaActiva): sin clave, los prompts quedan
+// instalados pero el bot aún no los usa — el panel lo avisa.
+function validarDatosPrompt(body, parcial = false) {
+  const nombre = body?.nombre !== undefined ? String(body.nombre || '').trim() : undefined;
+  const texto = body?.texto !== undefined ? String(body.texto || '').trim() : undefined;
+  if (!parcial || nombre !== undefined) {
+    if (!nombre) return { error: 'El nombre del prompt no puede estar vacío.' };
+    if (nombre.length > 80) return { error: 'El nombre es demasiado largo (máx. 80 caracteres).' };
+  }
+  if (!parcial || texto !== undefined) {
+    if (!texto) return { error: 'El texto del prompt no puede estar vacío.' };
+    if (texto.length > 4000) return { error: 'El texto es demasiado largo (máx. 4000 caracteres).' };
+  }
+  return { nombre, texto };
+}
+
+router.get('/prompts', (req, res) => {
+  res.json({ iaActiva: iaPrompts.iaActiva(), prompts: db.listPrompts() });
+});
+
+router.post('/prompts', (req, res) => {
+  const v = validarDatosPrompt(req.body || {});
+  if (v.error) return res.status(400).json({ error: v.error });
+  const p = db.createPrompt({ nombre: v.nombre, texto: v.texto });
+  iaPrompts.invalidarCachePrompts();
+  res.status(201).json({ ok: true, prompt: p });
+});
+
+router.put('/prompts/:id', (req, res) => {
+  const v = validarDatosPrompt(req.body || {}, true);
+  if (v.error) return res.status(400).json({ error: v.error });
+  const patch = {};
+  if (v.nombre !== undefined) patch.nombre = v.nombre;
+  if (v.texto !== undefined) patch.texto = v.texto;
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: 'Nada que guardar.' });
+  }
+  const p = db.updatePrompt(req.params.id, patch);
+  if (!p) return res.status(404).json({ error: 'Prompt no encontrado.' });
+  iaPrompts.invalidarCachePrompts();
+  res.json({ ok: true, prompt: p });
+});
+
+// Activar: este queda activo y TODOS los demás se apagan.
+router.post('/prompts/:id/activar', (req, res) => {
+  const p = db.setPromptActivo(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Prompt no encontrado.' });
+  iaPrompts.invalidarCachePrompts();
+  res.json({ ok: true, prompt: p });
+});
+
+router.post('/prompts/:id/desactivar', (req, res) => {
+  const p = db.setPromptInactivo(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Prompt no encontrado.' });
+  iaPrompts.invalidarCachePrompts();
+  res.json({ ok: true, prompt: p });
+});
+
+router.delete('/prompts/:id', (req, res) => {
+  if (!db.deletePrompt(req.params.id)) {
+    return res.status(404).json({ error: 'Prompt no encontrado.' });
+  }
+  iaPrompts.invalidarCachePrompts();
+  res.json({ ok: true });
 });
 
 module.exports = router;

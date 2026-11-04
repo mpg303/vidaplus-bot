@@ -67,6 +67,23 @@ const cfg = {
     process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || '',
   supabaseTable: process.env.SUPABASE_TABLE || 'jmp_state',
   supabaseStateName: process.env.SUPABASE_STATE_NAME || 'bot_db',
+
+  // --- Capa de prompts con IA (panel → bot) ---
+  // En el panel hay una sección «🧩 Prompts» donde el dueño
+  // instala prompts con nombre y activa UNO a la vez para
+  // probarlo (quedan en el estado del bot, db.prompts). La capa
+  // (services/iaPrompts.js) interpreta SOLO los mensajes que el
+  // bot no entendió (intent «otro»), siguiendo el prompt activo.
+  // IA_API_KEY: clave del proveedor de IA (compatible con la API
+  // de chat de OpenAI). SIN clave la capa está APAGADA: los
+  // prompts quedan instalados pero el bot no los usa y se
+  // comporta exactamente como siempre.
+  // IA_MODELO: modelo a usar; por defecto uno económico.
+  // IA_BASE_URL: solo si se usa otro proveedor compatible.
+  iaApiKey: process.env.IA_API_KEY || '',
+  iaModelo: process.env.IA_MODELO || 'gpt-4o-mini',
+  iaBaseUrl: (process.env.IA_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
+  iaTimeoutMs: parseInt(process.env.IA_TIMEOUT_MS || '12000', 10),
 };
 
 /**
