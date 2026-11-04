@@ -5470,6 +5470,72 @@ function manejarInterrupcionOrden(conversacion, textoCliente, idiomaMsg) {
   };
 }
 
+/**
+ * NUEVA CONSULTA TRAS EL CIERRE (defecto real 2026-11-04
+ * 08:18): la orden de prueba del dueño cerró de madrugada y
+ * horas después escribió «Venden concreto?»; como la ventana
+ * post-cierre dura 7 días (VENTANA_POST_CIERRE_MS) y todo
+ * mensaje sin dato de la orden caía en el «quedó anotado para
+ * el especialista», el bot lo trató como una nota de SU orden
+ * en vez de atender la pregunta como a un cliente nuevo. La
+ * caducidad de 30 min (ronda 29) no cubre esto: solo olvida
+ * el flujo A MEDIAS, y tras el cierre el flujo ya no existe —
+ * el estado post-cierre nace del historial (la confirmación
+ * armada), no del flujo.
+ * Regla: un mensaje que CLARAMENTE abre una consulta nueva
+ * (pregunta de servicio —«¿venden concreto?», «do you sell
+ * concrete?»—, buscar o necesitar concreto sin referirse a
+ * la orden, otro trabajo u otra cotización) NO es una nota
+ * de la orden vieja: manejarPostCierre devuelve null y el
+ * mensaje sigue el curso normal, como si lo escribiera un
+ * cliente nuevo (su intent queda «otro» y la capa IA puede
+ * atenderlo, igual que con un cliente sin orden). La orden
+ * anterior queda intacta en el registro de Orders.
+ * Lo que habla DE la orden («mi orden», «la orden», una
+ * referencia con número, cambiar/corregir/cancelar) NUNCA
+ * se rescata: sigue como corrección o nota del especialista.
+ */
+function esInicioNuevaConsulta(texto) {
+  const t = ` ${normalizar(texto)} `;
+  // Habla de la orden existente: jamás es consulta nueva.
+  if (
+    detectarReferenciaOrden(texto) ||
+    /\b(mi|la|esa|esta|su) orden\b/.test(t) ||
+    /\bmy order\b/.test(t) ||
+    /\b(cambiar|cambien|cambio de|corregir|corrige|cancelar|cancela|change|correct|cancel)\b/.test(t)
+  ) {
+    return false;
+  }
+  // Pregunta de servicio (ES/EN): venden/ofrecen/tienen/
+  // hacen/sell/offer + concreto/pompa/entrega/servicio.
+  const verboServicio =
+    /\b(venden|vende|vendan|ofrecen|ofrece|tienen|tiene|hacen|hace|realizan|manejan|sells?|selling|offer|offers|carry)\b/.test(
+      t
+    );
+  const temaServicio =
+    /\b(concreto|hormigon|concrete|cemento|cement|pompa|pump|entregas?|delivery|servicios?|services?)\b/.test(
+      t
+    );
+  if (verboServicio && temaServicio) return true;
+  if (/\bdo you (sell|offer|deliver)\b/.test(t)) return true;
+  // Apertura de pedido o cotización nueva, sin datos de la
+  // orden vieja (si trajera un mix, ya lo atendió arriba la
+  // maquinaria de corrección; esto cubre el texto sin mix).
+  if (
+    /\b(quiero|quisiera|necesito|ocupo|busco|andaba buscando)\b[^.?!]*\b(concreto|hormigon|concrete|una cotizacion|un presupuesto|un pedido)\b/.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  if (/\b(i need|i want|looking for)\b[^.?!]*\b(concrete|a quote|an order)\b/.test(t)) {
+    return true;
+  }
+  if (/\b(otra|otro|nueva|nuevo) (cotizacion|orden|pedido|trabajo)\b/.test(t)) return true;
+  if (/\b(another|new) (quote|order|job)\b/.test(t)) return true;
+  return false;
+}
+
 function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
   const orden = ultimaOrdenCerrada(conversacion);
   if (!orden) {
@@ -5758,6 +5824,13 @@ function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
       sinPrefijoDespertar: true,
     };
   }
+  // NUEVA CONSULTA tras el cierre (defecto 2026-11-04
+  // 08:18): si el mensaje no corrigió nada de la orden ni
+  // preguntó por su pago, pero CLARAMENTE abre una consulta
+  // nueva («¿Venden concreto?»), NO es una nota de la orden
+  // vieja: sale del estado post-cierre y sigue el curso
+  // normal, como un cliente nuevo.
+  if (esInicioNuevaConsulta(textoCliente)) return null;
   // Mensaje genérico tras el cierre: queda anotado para el
   // especialista que atiende la orden (no «no le entendí»).
   return {
