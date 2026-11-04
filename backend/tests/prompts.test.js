@@ -134,20 +134,22 @@ function check(nombre, cond, extra = '') {
   cfg.iaApiKey = '';
   check('al final la capa queda apagada de nuevo', ia.iaActiva() === false);
 
-  // Decisión del dueño (2026-11-03 21:23): NO va ninguna clave
-  // de IA en el bot y el aviso del panel lo dice tal cual — los
-  // prompts se guardan y Muse los programa como reglas y
-  // respuestas. Ni el aviso viejo («el bot aún no los usa») ni
-  // ninguna clave puesta por defecto en el código.
+  // Decisión del dueño (2026-11-03 21:25): SÍ se conecta la
+  // llave de IA del bot (se está colocando esta noche, solo
+  // como variable de entorno en Render) y el aviso del panel lo
+  // dice tal cual: los prompts se interpretan con esa llave;
+  // instala tu prompt y actívalo para probarlo. La llave NUNCA
+  // va en el código ni por defecto en config.
   const appJsPanel = fs.readFileSync(path.join(__dirname, '..', '..', 'panel', 'app.js'), 'utf8');
-  check('panel: el aviso dice que NO se usa ninguna clave de IA y que Muse programa el prompt',
-    appJsPanel.includes('Sin clave de IA:') &&
-    appJsPanel.includes('Muse lo programa en el bot como reglas y respuestas') &&
-    appJsPanel.includes('no se usa ninguna clave de IA'), '');
-  check('panel: el aviso viejo («aún no los usa» / «Clave de IA conectada») ya no existe',
-    !appJsPanel.includes('aún no los usa') && !appJsPanel.includes('Clave de IA conectada'), '');
+  check('panel: el aviso dice que los prompts se interpretan con la llave de IA del bot',
+    appJsPanel.includes('los prompts se interpretan con la llave de IA del bot') &&
+    appJsPanel.includes('Instala tu prompt y actívalo para probarlo'), '');
+  check('panel: el aviso refleja el estado real de la llave (se está colocando esta noche)',
+    appJsPanel.includes('se está colocando esta noche') && appJsPanel.includes('data.iaActiva'), '');
+  check('panel: NO queda el aviso sin llave («no se usa ninguna clave de IA») ni el de «aún no los usa»',
+    !appJsPanel.includes('no se usa ninguna clave de IA') && !appJsPanel.includes('aún no los usa'), '');
   const configJs = fs.readFileSync(path.join(__dirname, '..', 'src', 'config.js'), 'utf8');
-  check('código: ninguna clave de IA por defecto (iaApiKey nace de la env, vacía)',
+  check('código: ninguna clave de IA puesta (iaApiKey nace solo de la env)',
     configJs.includes("iaApiKey: process.env.IA_API_KEY || ''") && !/sk-[A-Za-z0-9]{10,}/.test(configJs), '');
 
   console.log(`\nPROMPTS: ${ok}/${total} pruebas OK`);

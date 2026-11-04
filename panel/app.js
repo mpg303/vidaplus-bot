@@ -512,12 +512,13 @@ async function cargarPrompts() {
   const estado = document.getElementById('prompts-estado');
   try {
     const data = await api('/api/prompts');
-    // Decisión del dueño (2026-11-03): NO se usa ninguna clave
-    // de IA en este bot. Los prompts se instalan y quedan
-    // guardados aquí; para que uno entre en vigor, Muse lo
-    // programa en el bot como reglas y respuestas.
-    estado.innerHTML =
-      '🧩 <strong>Sin clave de IA:</strong> aquí instalas tus prompts y quedan guardados. Para que un prompt entre en vigor, Muse lo programa en el bot como reglas y respuestas — no se usa ninguna clave de IA.';
+    // Decisión del dueño (2026-11-03 21:25): SÍ se conecta la
+    // llave de IA del bot para que los prompts funcionen en
+    // vivo; la llave se está colocando esta noche (solo como
+    // variable de entorno del servicio, nunca en el código).
+    estado.innerHTML = data.iaActiva
+      ? '✅ <strong>Clave de IA conectada:</strong> los prompts se interpretan con la llave de IA del bot. Instala tu prompt y actívalo para probarlo.'
+      : '🔑 <strong>La llave de IA del bot se está colocando esta noche:</strong> instala tu prompt y actívalo para probarlo; en cuanto la llave quede puesta, el bot lo interpreta en vivo con esa llave.';
     const items = data.prompts || [];
     box.innerHTML = items.length ? '' : '<p class="hint">Aún no hay prompts instalados. Instale el primero con el formulario de arriba.</p>';
     for (const p of items) {
