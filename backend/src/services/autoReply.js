@@ -2423,11 +2423,90 @@ function esPreguntaPrecio(texto) {
   return false;
 }
 
-/** Respuesta corta sobre el precio: jamás se da un número. */
+/**
+ * Respuesta corta sobre el precio cuando AÚN no se conoce el
+ * precio de la orden (sin mix o sin dirección de Dallas): no se
+ * da ningún número. Si la orden ya trae mix y dirección de
+ * Dallas, el precio por yarda SÍ se conoce y se responde
+ * concreto (ver lineaPrecioPorYarda) — falla real 2026-11-03
+ * 21:19: con la orden ya cerrada (7 yds, 3000 psi, Dallas) el
+ * bot evadió «¿Cuánto sale por la yarda?» con esta línea y
+ * repitió la pregunta de pago.
+ */
 const LINEA_PRECIO =
   'El precio depende de la dirección del trabajo y del mix. Con los datos de su orden se lo confirmamos enseguida.';
 const LINEA_PRECIO_EN =
   "Price depends on the job address and the mix. With your order details we'll confirm it right away.";
+
+/**
+ * ¿El cliente pregunta el PRECIO POR YARDA? («¿cuánto sale por
+ * la yarda?», «cuánto cuesta la yarda», «what's the price per
+ * yard»…). Es una pregunta de precio que menciona la yarda
+ * como unidad del precio.
+ */
+function esPreguntaPrecioPorYarda(texto) {
+  if (!esPreguntaPrecio(texto)) return false;
+  const t = normalizar(texto);
+  return (
+    /\bpor (la )?yarda\b/.test(t) ||
+    /\bper yard\b/.test(t) ||
+    /\b(precio|cuesta|cuestan|sale|salen|vale|valen|costo|cost|price|charge)\b[^.?!]*\b(yarda|yard)\b/.test(t) ||
+    /\b(yarda|yard)\b[^.?!]*\b(precio|cuesta|sale|vale|costo|cost|price)\b/.test(t)
+  );
+}
+
+/**
+ * Precio por yarda PUBLICABLE de la orden en curso, o null si
+ * no se puede dar un número con las reglas del dueño: la tabla
+ * es SOLO Dallas (dirección de Dallas ya capturada); la Pompa
+ * mix 50-50 no tiene precio automático (su total lo confirma el
+ * equipo, como en calcularTotalParaMix); y si la orden ocupa el
+ * SERVICIO de pompa (boom / small line, aún sin precio
+ * definido), tampoco se suelta cifra: la confirma el equipo.
+ * Devuelve { uno: {mix, precio} } o { par: [{mix, precio}…] }
+ * con las cotizaciones en par (ronda 10/25).
+ */
+function precioYardaDeLaOrden(datos) {
+  if (!datos || !direccionEsDallas(datos.direccion)) return null;
+  if (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente') return null;
+  if (datos.mixesCotizacion && datos.mixesCotizacion.length >= 2) {
+    const par = datos.mixesCotizacion.map((mix) => ({ mix, precio: PRECIOS_MIX[mix] }));
+    if (par.some((p) => !(p.precio > 0))) return null;
+    return { par };
+  }
+  const precio = PRECIOS_MIX[datos.mix];
+  if (!(precio > 0)) return null;
+  return { uno: { mix: datos.mix, precio } };
+}
+
+/**
+ * Línea con el precio CONCRETO por yarda de la orden (o null si
+ * no es publicable, ver precioYardaDeLaOrden). Los precios de
+ * la tabla son por yarda ANTES de taxes: todo total los incluye
+ * (8.25%), así que la línea lo aclara igual que el resumen
+ * («incluye los taxes del 8.25%») pero al revés: «más los
+ * taxes del 8.25%».
+ */
+function lineaPrecioPorYarda(datos, idioma = 'es') {
+  const p = precioYardaDeLaOrden(datos);
+  if (!p) return null;
+  if (idioma === 'en') {
+    if (p.par) {
+      return (
+        `💰 *Prices per yard in Dallas (plus ${IMPUESTOS_PCT}% taxes):*\n` +
+        p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n')
+      );
+    }
+    return `💰 The price per yard for the *${p.uno.mix}* mix in Dallas is *$${formatearDinero(p.uno.precio)}*, plus ${IMPUESTOS_PCT}% taxes.`;
+  }
+  if (p.par) {
+    return (
+      `💰 *Precios por yarda en Dallas (más los taxes del ${IMPUESTOS_PCT}%):*\n` +
+      p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n')
+    );
+  }
+  return `💰 El precio por yarda del mix *${p.uno.mix}* en Dallas es de *$${formatearDinero(p.uno.precio)}*, más los taxes del ${IMPUESTOS_PCT}%.`;
+}
 
 /**
  * ¿El cliente pregunta QUÉ ES el aire o para qué sirve? Mucha gente
@@ -4148,6 +4227,19 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     };
   }
 
+  // PRECIO POR YARDA YA CONOCIDO (falla real 2026-11-03 21:19):
+  // si el cliente pregunta el precio POR YARDA en cualquier
+  // paso — o pregunta el precio ya en el paso del PAGO, con la
+  // orden completa — y la orden trae mix con dirección de
+  // Dallas, la respuesta es el precio concreto de SU mix, no la
+  // línea evasiva. Si el precio no es publicable (fuera de
+  // Dallas, Pompa mix 50-50, servicio de pompa sin precio…),
+  // queda la línea genérica de siempre.
+  const precioYarda =
+    esPreguntaPrecioPorYarda(textoCliente) || (paso === 'pago' && esPreguntaPrecio(textoCliente))
+      ? lineaPrecioPorYarda(flow.datos, idioma)
+      : null;
+
   const partes = [];
   if (esNuevo) {
     partes.push(
@@ -4172,7 +4264,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     partes.push(lineaMedidas(detectados.medidas, idioma));
   } else if (
     !esNuevo && !nuevos.length && !corregidos.length &&
-    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !detectados.mixInvalido && !detectados.fechaInvalida && !escalado && !preguntaAmPm && !oferta7am && !preguntaRangoYardas
+    !faq && !ciudad && !noSabe && !preguntaPedido && !pagoAdelantado && !detectados.psiInvalido && !detectados.mixInvalido && !detectados.fechaInvalida && !escalado && !preguntaAmPm && !oferta7am && !preguntaRangoYardas && !precioYarda
   ) {
     partes.push(prefijoContinuacion(flow, idioma));
   }
@@ -4192,10 +4284,13 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   if (noSabe && !detectados.medidas) {
     partes.push(lineaNoSabeYardas(idioma));
   }
-  // Pregunta de precio a mitad del flujo (o al abrirlo): respuesta
-  // corta SIN números, y el flujo continúa donde iba.
+  // Pregunta de precio a mitad del flujo (o al abrirlo): si el
+  // precio por yarda de la orden ya se conoce (mix + Dallas),
+  // va el número concreto de SU mix; si no, la respuesta corta
+  // SIN números de siempre. El flujo continúa donde iba (la
+  // pregunta del paso se retoma una sola vez, al final).
   if (esPreguntaPrecio(textoCliente)) {
-    partes.push(idioma === 'en' ? LINEA_PRECIO_EN : LINEA_PRECIO);
+    partes.push(precioYarda || (idioma === 'en' ? LINEA_PRECIO_EN : LINEA_PRECIO));
   }
   if (pagoAdelantado && !avisoEfectivo) {
     // Pregunta por el MOMENTO del pago («¿pago el día del
@@ -5929,6 +6024,8 @@ module.exports = {
   fechaEsDomingo,
   fechaExplicitaInvalida,
   esPreguntaPrecio,
+  esPreguntaPrecioPorYarda,
+  lineaPrecioPorYarda,
   preguntaSobreAire,
   recomendacionAire,
   preguntaCuandoPedir,

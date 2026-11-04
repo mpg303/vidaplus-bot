@@ -134,6 +134,22 @@ function check(nombre, cond, extra = '') {
   cfg.iaApiKey = '';
   check('al final la capa queda apagada de nuevo', ia.iaActiva() === false);
 
+  // Decisión del dueño (2026-11-03 21:23): NO va ninguna clave
+  // de IA en el bot y el aviso del panel lo dice tal cual — los
+  // prompts se guardan y Muse los programa como reglas y
+  // respuestas. Ni el aviso viejo («el bot aún no los usa») ni
+  // ninguna clave puesta por defecto en el código.
+  const appJsPanel = fs.readFileSync(path.join(__dirname, '..', '..', 'panel', 'app.js'), 'utf8');
+  check('panel: el aviso dice que NO se usa ninguna clave de IA y que Muse programa el prompt',
+    appJsPanel.includes('Sin clave de IA:') &&
+    appJsPanel.includes('Muse lo programa en el bot como reglas y respuestas') &&
+    appJsPanel.includes('no se usa ninguna clave de IA'), '');
+  check('panel: el aviso viejo («aún no los usa» / «Clave de IA conectada») ya no existe',
+    !appJsPanel.includes('aún no los usa') && !appJsPanel.includes('Clave de IA conectada'), '');
+  const configJs = fs.readFileSync(path.join(__dirname, '..', 'src', 'config.js'), 'utf8');
+  check('código: ninguna clave de IA por defecto (iaApiKey nace de la env, vacía)',
+    configJs.includes("iaApiKey: process.env.IA_API_KEY || ''") && !/sk-[A-Za-z0-9]{10,}/.test(configJs), '');
+
   console.log(`\nPROMPTS: ${ok}/${total} pruebas OK`);
   if (fallos.length) {
     console.log('FALLOS:');
