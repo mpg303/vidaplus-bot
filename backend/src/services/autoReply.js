@@ -626,6 +626,7 @@ function datosVacios() {
   return {
     yardas: null, // { cantidad: '10', plus: false }
     mix: null,
+    mixBase: null, // psi base de la orden cuando el mix es «Trailer pump mix 50-50»: la conversión de manejarFlujo lo guarda ANTES de reemplazar el mix, y es la base del precio por yarda de ese mix (base + $5, ver precioYardaDeLaOrden). Null si nunca hubo un psi (el mix se pidió como «Pompa mix 50-50»).
     mixesCotizacion: null, // ['3000 psi', '3500 psi'] cuando el cliente pide precio de 2+ mixes: son 2+ COTIZACIONES con todo lo demás igual y solo cambia el mix (regla del dueño, 2026-10-31 19:03); mientras exista el par, el paso del mix cuenta como dado y NO se obliga al cliente a elegir uno
     aire: null, // 'con aire' | 'no aire' — se pide junto con el mix
     pompa: null, // null = aún no se preguntó · 'pendiente' = dijo que sí ocupa y falta que elija · 'Sin pompa' = dijo que no · 'Boom pump' | 'Small line / Trailer pump' (small line y trailer son la misma) — se pregunta tras el aire (regla del dueño, 2026-10-30)
@@ -2462,25 +2463,45 @@ function esPreguntaPrecioPorYarda(texto) {
 /**
  * Precio por yarda PUBLICABLE de la orden en curso, o null si
  * no se puede dar un número con las reglas del dueño: la tabla
- * es SOLO Dallas (dirección de Dallas ya capturada); la Pompa
- * mix 50-50 no tiene precio automático (su total lo confirma el
- * equipo, como en calcularTotalParaMix); y si la orden ocupa el
- * SERVICIO de pompa (boom / small line, aún sin precio
- * definido), tampoco se suelta cifra: la confirma el equipo.
+ * es SOLO Dallas (dirección de Dallas ya capturada) y la Pompa
+ * mix 50-50 pedida como mix (sin psi base) no tiene precio
+ * automático (su total lo confirma el equipo, como en
+ * calcularTotalParaMix). La orden puede ocupar el SERVICIO de
+ * pompa (boom / small line-trailer, aún sin precio definido):
+ * eso NO anula el precio del CONCRETO por yarda, que sí se
+ * conoce — el servicio sin precio es otra cosa (la orden
+ * cierra sin total y ese costo lo confirma el especialista,
+ * ver la marca «pompa» del resultado y lineaPrecioPorYarda).
+ * Con trailer pump el mix de la orden es «Trailer pump mix
+ * 50-50» y su precio por yarda es el del psi base + $5 (el
+ * pompa mix): el psi base viaja en datos.mixBase. Con boom
+ * pump el precio es el del psi pedido, tal cual.
  * Devuelve { uno: {mix, precio} } o { par: [{mix, precio}…] }
- * con las cotizaciones en par (ronda 10/25).
+ * con las cotizaciones en par (ronda 10/25); con pompa, el
+ * resultado lleva además la marca «pompa» (y en el caso
+ * trailer, «base»/«baseMix» dentro de «uno» para el desglose).
  */
 function precioYardaDeLaOrden(datos) {
   if (!datos || !direccionEsDallas(datos.direccion)) return null;
-  if (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente') return null;
+  const pompa =
+    datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente' ? datos.pompa : null;
   if (datos.mixesCotizacion && datos.mixesCotizacion.length >= 2) {
     const par = datos.mixesCotizacion.map((mix) => ({ mix, precio: PRECIOS_MIX[mix] }));
     if (par.some((p) => !(p.precio > 0))) return null;
-    return { par };
+    return pompa ? { par, pompa } : { par };
+  }
+  if (pompa === 'Small line / Trailer pump' || datos.mix === 'Trailer pump mix 50-50') {
+    const mixBase = datos.mix === 'Trailer pump mix 50-50' ? datos.mixBase : datos.mix;
+    const base = PRECIOS_MIX[mixBase];
+    if (!(base > 0)) return null;
+    return {
+      uno: { mix: 'Trailer pump mix 50-50', precio: base + 5, base, baseMix: mixBase },
+      pompa: pompa || 'Small line / Trailer pump',
+    };
   }
   const precio = PRECIOS_MIX[datos.mix];
   if (!(precio > 0)) return null;
-  return { uno: { mix: datos.mix, precio } };
+  return pompa ? { uno: { mix: datos.mix, precio }, pompa } : { uno: { mix: datos.mix, precio } };
 }
 
 /**
@@ -2494,22 +2515,40 @@ function precioYardaDeLaOrden(datos) {
 function lineaPrecioPorYarda(datos, idioma = 'es') {
   const p = precioYardaDeLaOrden(datos);
   if (!p) return null;
+  // Con pompa (boom o trailer) el precio del concreto por
+  // yarda va con su desglose si aplica (trailer: base + $5 del
+  // pompa mix) y SIEMPRE con la aclaración de que el costo del
+  // SERVICIO de pompa lo confirma el especialista (ese servicio
+  // sigue sin precio: la orden cierra sin total).
+  const notaPompa = p.pompa
+    ? idioma === 'en'
+      ? ' The pump service cost will be confirmed by the specialist.'
+      : ' El costo del servicio de pompa se lo confirma el especialista.'
+    : '';
   if (idioma === 'en') {
     if (p.par) {
       return (
         `💰 *Prices per yard in Dallas (plus ${IMPUESTOS_PCT}% taxes):*\n` +
-        p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n')
+        p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n') +
+        notaPompa
       );
     }
-    return `💰 The price per yard for the *${p.uno.mix}* mix in Dallas is *$${formatearDinero(p.uno.precio)}*, plus ${IMPUESTOS_PCT}% taxes.`;
+    if (p.uno.base) {
+      return `💰 The price per yard for the *${p.uno.mix}* in Dallas is *$${formatearDinero(p.uno.precio)}* (the ${p.uno.baseMix} mix is $${formatearDinero(p.uno.base)} and the pump mix adds $5.00 per yard), plus ${IMPUESTOS_PCT}% taxes.${notaPompa}`;
+    }
+    return `💰 The price per yard for the *${p.uno.mix}* mix in Dallas is *$${formatearDinero(p.uno.precio)}*, plus ${IMPUESTOS_PCT}% taxes.${notaPompa}`;
   }
   if (p.par) {
     return (
       `💰 *Precios por yarda en Dallas (más los taxes del ${IMPUESTOS_PCT}%):*\n` +
-      p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n')
+      p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n') +
+      notaPompa
     );
   }
-  return `💰 El precio por yarda del mix *${p.uno.mix}* en Dallas es de *$${formatearDinero(p.uno.precio)}*, más los taxes del ${IMPUESTOS_PCT}%.`;
+  if (p.uno.base) {
+    return `💰 El precio por yarda del *${p.uno.mix}* en Dallas es de *$${formatearDinero(p.uno.precio)}* (el mix ${p.uno.baseMix} cuesta $${formatearDinero(p.uno.base)} y el pompa mix suma $5.00 por yarda), más los taxes del ${IMPUESTOS_PCT}%.${notaPompa}`;
+  }
+  return `💰 El precio por yarda del mix *${p.uno.mix}* en Dallas es de *$${formatearDinero(p.uno.precio)}*, más los taxes del ${IMPUESTOS_PCT}%.${notaPompa}`;
 }
 
 /**
@@ -3907,10 +3946,17 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // paso. La BOOM pump NO dispara el cambio: con boom se queda
   // el mix psi pedido. Sin discurso extra: la confirmación de
   // este turno (si el mix se anotó ahora) y el resumen ya lo
-  // traen. Precios SIN cambio: con servicio de pompa la orden
-  // ya cierra sin total, y este mix no tiene precio automático
-  // (ver la guarda en precioYarda).
+  // traen. El TOTAL no cambia: con servicio de pompa la orden
+  // ya cierra sin total. Pero el PRECIO POR YARDA del concreto
+  // sí se conoce y sí se responde: antes de reemplazar el mix
+  // se guarda el psi base en mixBase (la corrección de un psi
+  // llega como mix psi y esta misma conversión lo actualiza);
+  // si el mix previo no era un psi (se pidió «Pompa mix
+  // 50-50» como mix), mixBase queda null y no se publica
+  // cifra (ver precioYardaDeLaOrden).
   if (flow.datos.pompa === 'Small line / Trailer pump' && !flow.datos.mixesCotizacion) {
+    const mPsiBase = /^(\d{3,5})\s*psi$/i.exec(String(flow.datos.mix || '').trim());
+    if (mPsiBase) flow.datos.mixBase = `${parseInt(mPsiBase[1], 10)} psi`;
     flow.datos.mix = 'Trailer pump mix 50-50';
   }
 
@@ -4380,11 +4426,22 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // paso — o pregunta el precio ya en el paso del PAGO, con la
   // orden completa — y la orden trae mix con dirección de
   // Dallas, la respuesta es el precio concreto de SU mix, no la
-  // línea evasiva. Si el precio no es publicable (fuera de
-  // Dallas, Pompa mix 50-50, servicio de pompa sin precio…),
-  // queda la línea genérica de siempre.
+  // línea evasiva. La pregunta de precio GENÉRICA («Dame
+  // precio», falla real 2026-11-04 01:16 con trailer pump)
+  // también va concreta en cualquier paso si el mix y la
+  // dirección de Dallas YA estaban en los datos (venían de
+  // turnos anteriores); el turno que trae el volcado de datos
+  // (el mix o la dirección se capturan o se corrigen en ESTE
+  // mensaje) conserva la línea genérica aprobada. Si el precio
+  // no es publicable (fuera de Dallas, Pompa mix 50-50 sin psi
+  // base…), queda la línea genérica de siempre.
+  const datosVenianDeAntes =
+    !nuevos.includes('mix') && !nuevos.includes('direccion') &&
+    !corregidos.includes('mix') && !corregidos.includes('direccion');
   const precioYarda =
-    esPreguntaPrecioPorYarda(textoCliente) || (paso === 'pago' && esPreguntaPrecio(textoCliente))
+    esPreguntaPrecioPorYarda(textoCliente) ||
+    (paso === 'pago' && esPreguntaPrecio(textoCliente)) ||
+    (esPreguntaPrecio(textoCliente) && datosVenianDeAntes)
       ? lineaPrecioPorYarda(flow.datos, idioma)
       : null;
 

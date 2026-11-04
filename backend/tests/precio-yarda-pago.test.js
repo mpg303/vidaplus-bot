@@ -15,6 +15,27 @@
 // «se lo confirmamos enseguida». Sin mix o sin Dallas (o con
 // Pompa mix 50-50 / servicio de pompa, sin precio automático),
 // sigue la línea genérica: jamás un número inventado.
+//
+// RONDA «DAME PRECIO» CON POMPA (falla real 2026-11-04 01:16):
+// con la orden ya registrada con TRAILER PUMP (mix 5000 psi
+// convertido a «Trailer pump mix 50-50» por la regla de sync
+// 49), Jesus escribió «Dame precio» en el paso del pago y el
+// bot evadió OTRA VEZ con la línea genérica. Causa raíz: (1)
+// precioYardaDeLaOrden anulaba la cifra ante CUALQUIER pompa
+// — confundía el SERVICIO de pompa (sin precio: la orden
+// cierra sin total) con el precio del CONCRETO por yarda, que
+// sí se conoce; (2) la conversión a «Trailer pump mix 50-50»
+// descartaba el psi base. Arreglo: la conversión guarda el
+// psi base en datos.mixBase (y lo actualiza si el cliente
+// corrige el psi); el precio por yarda con trailer es
+// base + $5 (el pompa mix) CON su desglose; con boom es el
+// psi tal cual; con pompa la línea aclara que el costo del
+// SERVICIO lo confirma el especialista y la orden sigue
+// cerrando SIN total. La pregunta genérica de precio («Dame
+// precio») va concreta en cualquier paso si mix + Dallas ya
+// venían de turnos anteriores; el turno que trae el volcado
+// de datos conserva la línea genérica aprobada. «Pompa mix
+// 50-50» pedida como mix (sin psi base) sigue sin cifra.
 // Correr: node tests/precio-yarda-pago.test.js
 // ============================================================
 const fs = require('fs');
@@ -199,6 +220,159 @@ function hastaPagoDallas(waId) {
     bot.esPreguntaPrecioPorYarda('¿cuánto sale?') === false);
   check('Detector: «¿en cuánto llega el camión?» NO es precio por yarda',
     bot.esPreguntaPrecioPorYarda('¿en cuánto llega el camión?') === false);
+}
+
+// ============================================================
+// RONDA «DAME PRECIO» CON POMPA (falla real 2026-11-04 01:16)
+// ============================================================
+
+// Orden completa de Dallas con TRAILER PUMP hasta el paso del
+// pago (el guion de la captura de Jesus: 5000 psi convertido a
+// «Trailer pump mix 50-50», pregunta de pago pendiente).
+function hastaPagoTrailer(waId, psi = 5000) {
+  let conv = nuevaConv(waId, 'Cliente Precio Trailer');
+  let r;
+  for (const paso of ['Hola, necesito concreto', '7 yds', `${psi} psi`, 'No aire', 'Sí', 'Tráiler',
+    '3069 forest ln Dallas tx', '20 de noviembre', '7:00', 'Am', 'Jesús Morillo', 'No tengo']) {
+    r = turno(conv, paso); conv = r.conv;
+  }
+  return { conv, ultimo: r.d.texto || '' };
+}
+const LINEA_TRAILER_5000 =
+  '💰 El precio por yarda del *Trailer pump mix 50-50* en Dallas es de *$185.00* (el mix 5000 psi cuesta $180.00 y el pompa mix suma $5.00 por yarda), más los taxes del 8.25%. El costo del servicio de pompa se lo confirma el especialista.';
+const PREGUNTA_PAGO = '¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta de crédito, Zelle o cheque?';
+
+{
+  const { conv } = hastaPagoTrailer('40000000030');
+  check('Trailer captura: la conversión guardó el psi base en mixBase («5000 psi»)',
+    conv.flow.datos.mix === 'Trailer pump mix 50-50' && conv.flow.datos.mixBase === '5000 psi',
+    JSON.stringify(conv.flow.datos));
+  const r = turno(conv, 'Dame precio');
+  const texto = r.d.texto || '';
+  check('Trailer captura: «Dame precio» responde el TEXTO EXACTO ($185.00 con desglose + pregunta de pago)',
+    texto === `${LINEA_TRAILER_5000}\n${PREGUNTA_PAGO}`, texto);
+  check('Trailer captura: el flujo sigue intacto en el paso del pago',
+    !!r.conv.flow && !r.conv.flow.datos.pago && r.conv.flow.ordenMostrada === true,
+    JSON.stringify(r.conv.flow && r.conv.flow.datos));
+  const r2 = turno(r.conv, 'Efectivo');
+  check('Trailer captura: tras «Efectivo» la orden cierra con número y SIN total (el servicio de pompa no tiene precio)',
+    (r2.d.texto || '').includes('número de orden') && !r2.conv.flow &&
+    !(r2.d.confirmacionArmada || '').includes('Total:'), r2.d.texto);
+}
+{
+  // Trailer con cada psi restante: precio = base + $5, con su
+  // desglose (la pregunta aquí es «por la yarda»).
+  for (const [psi, base] of [[3000, 160], [3500, 165], [3600, 170], [4000, 170], [4500, 175]]) {
+    const { conv } = hastaPagoTrailer(`4000000004${psi / 100}`, psi);
+    const r = turno(conv, 'Cuánto sale por la yarda ?');
+    const texto = r.d.texto || '';
+    check(`Trailer ${psi} psi: precio $${base + 5}.00 (base $${base}.00 + $5 del pompa mix) con desglose`,
+      texto.includes(`*$${base + 5}.00*`) && texto.includes(`el mix ${psi} psi cuesta $${base}.00`) &&
+      texto.includes('El costo del servicio de pompa se lo confirma el especialista.'), texto);
+  }
+}
+{
+  // BOOM pump (4000 psi): el precio por yarda es el del psi
+  // TAL CUAL ($170.00, sin el +$5 del pompa mix), con la
+  // aclaración del servicio; la orden cierra sin total.
+  let conv = nuevaConv('40000000050', 'Cliente Precio Boom');
+  let r;
+  for (const paso of ['Hola, necesito concreto', '7 yds', '4000 psi', 'No aire', 'Sí', 'Boom',
+    '3069 forest ln Dallas tx', '20 de noviembre', '7:00', 'Am', 'Juan Perez', 'No tengo']) {
+    r = turno(conv, paso); conv = r.conv;
+  }
+  r = turno(conv, 'Dame precio');
+  const texto = r.d.texto || '';
+  check('Boom: «Dame precio» da el psi tal cual ($170.00 del 4000 psi) + aclaración del servicio',
+    texto.includes('del mix *4000 psi*') && texto.includes('$170.00') && !texto.includes('$175.00') &&
+    texto.includes('El costo del servicio de pompa se lo confirma el especialista.'), texto);
+  const r2 = turno(r.conv, 'Efectivo');
+  check('Boom: la orden cierra con número y SIN total tras el pago',
+    !r2.conv.flow && !(r2.d.confirmacionArmada || '').includes('Total:'), r2.d.confirmacionArmada);
+}
+{
+  // «Pompa mix 50-50» pedida COMO MIX y trailer elegido
+  // después: no hay psi base (mixBase null) — sin cifra.
+  let conv = nuevaConv('40000000051', 'Cliente Pompa Mix Trailer');
+  let r;
+  for (const paso of ['Hola, necesito concreto', '7 yds', 'pompa mix 50-50', 'Aire', 'Sí', 'Tráiler',
+    '3069 forest ln Dallas tx', 'Mañana', '10:00', 'Am', 'Juan Perez', 'No tengo']) {
+    r = turno(conv, paso); conv = r.conv;
+  }
+  r = turno(conv, 'Dame precio');
+  const texto = r.d.texto || '';
+  check('Trailer sin psi base («Pompa mix 50-50» como mix): línea genérica, SIN cifra inventada',
+    texto.includes('El precio depende de la dirección del trabajo y del mix') && !/\$\d/.test(texto), texto);
+}
+{
+  // Trailer FUERA de Dallas: no hay precio publicable.
+  let conv = nuevaConv('40000000052', 'Cliente Trailer Fort Worth');
+  let r;
+  for (const paso of ['Hola, necesito concreto', '7 yds', '5000 psi', 'No aire', 'Sí', 'Tráiler',
+    '100 Main St Fort Worth Tx', 'Mañana', '10:00', 'Am', 'Juan Perez', 'No tengo']) {
+    r = turno(conv, paso); conv = r.conv;
+  }
+  r = turno(conv, 'Dame precio');
+  const texto = r.d.texto || '';
+  check('Trailer fuera de Dallas: línea genérica, SIN $185 inventado',
+    texto.includes('El precio depende de la dirección del trabajo y del mix') && !texto.includes('$185'), texto);
+}
+{
+  // CORRECCIÓN del psi tras la conversión: mixBase se
+  // actualiza y el precio responde con la base nueva.
+  const { conv } = hastaPagoTrailer('40000000053');
+  let r = turno(conv, 'Mejor 4000 psi');
+  check('Corrección de psi: mixBase se actualiza a «4000 psi» (el mix sigue trailer)',
+    r.conv.flow.datos.mixBase === '4000 psi' && r.conv.flow.datos.mix === 'Trailer pump mix 50-50',
+    JSON.stringify(r.conv.flow.datos));
+  r = turno(r.conv, 'Dame precio');
+  const texto = r.d.texto || '';
+  check('Corrección de psi: el precio pasa a $175.00 (base 4000 psi $170.00 + $5)',
+    texto.includes('*$175.00*') && texto.includes('el mix 4000 psi cuesta $170.00'), texto);
+}
+{
+  // Pregunta GENÉRICA a mitad del flujo con mix + Dallas ya
+  // de turnos anteriores (paso de la fecha, sin pompa):
+  // también va concreta y retoma el paso.
+  let conv = nuevaConv('40000000054', 'Cliente Precio Mitad Generico');
+  let r;
+  for (const paso of ['Hola, necesito concreto', '7 yds', '3000 psi', 'Aire', 'No', '3069 forest ln Dallas tx']) {
+    r = turno(conv, paso); conv = r.conv;
+  }
+  r = turno(conv, 'Dame precio');
+  const texto = r.d.texto || '';
+  check('«Dame precio» a mitad (mix + Dallas ya dados): concreto $160.00 y retoma el paso (el día)',
+    texto.includes('$160.00') && texto.includes('¿Para qué día'), texto);
+}
+{
+  // El turno que TRAE el volcado de datos (mix + dirección +
+  // pregunta de precio en el mismo mensaje) conserva la
+  // línea genérica aprobada; la cifra llega al turno
+  // siguiente, cuando los datos ya venían de antes.
+  let conv = nuevaConv('40000000055', 'Cliente Volcado Precio');
+  let r = turno(conv, 'Hola, necesito concreto'); conv = r.conv;
+  r = turno(conv, '7 yds'); conv = r.conv;
+  r = turno(conv, '3000 psi con aire, no ocupo pompa, en 3069 forest ln Dallas tx, cuánto cuesta?');
+  const texto = r.d.texto || '';
+  check('Volcado de datos + precio en el mismo turno: línea genérica aprobada, SIN cifra',
+    texto.includes('El precio depende de la dirección del trabajo y del mix') && !texto.includes('$160'), texto);
+}
+{
+  // EN con trailer: «give me the price» en el paso del pago.
+  let conv = nuevaConv('40000000056', 'Trailer Price Client');
+  let r;
+  for (const paso of ['Hello, I need concrete', '7 yards', '5000 psi', 'no air', 'yes', 'trailer',
+    '3069 Forest Ln Dallas TX', 'tomorrow', '7:00', 'am', 'John Smith', 'no company']) {
+    r = turno(conv, paso); conv = r.conv;
+  }
+  r = turno(conv, 'give me the price');
+  const texto = r.d.texto || '';
+  const lineaEN =
+    '💰 The price per yard for the *Trailer pump mix 50-50* in Dallas is *$185.00* (the 5000 psi mix is $180.00 and the pump mix adds $5.00 per yard), plus 8.25% taxes. The pump service cost will be confirmed by the specialist.';
+  check('EN trailer: «give me the price» responde el TEXTO EXACTO en inglés ($185.00 con desglose)',
+    texto === `${lineaEN}\nHow will you pay: cash, debit card, credit card, Zelle or check?`, texto);
+  check('EN trailer: sin la línea genérica EN y la pregunta de pago se retoma UNA sola vez',
+    !texto.includes('Price depends on the job address') && veces(texto, 'How will you pay') === 1, texto);
 }
 
 console.log(`\nprecio-yarda-pago: ${ok}/${total}`);
