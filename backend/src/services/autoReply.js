@@ -1361,6 +1361,12 @@ const MESES_NOMBRE_EN = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
+const DIAS_SEMANA_ES = [
+  'domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado',
+];
+const DIAS_SEMANA_EN = [
+  'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
+];
 
 /**
  * Corrección cuando el cliente da una FECHA QUE NO EXISTE
@@ -2198,7 +2204,7 @@ function confirmacionDe(campo, datos, idioma = 'es') {
       case 'direccion':
         return `got the *address*`;
       case 'fecha':
-        return `noted the day: *${datos.fecha}*`;
+        return `noted the day: *${fechaConDiaSemana(datos.fecha, 'en')}*`;
       case 'hora':
         return `noted the time: *${datos.hora}*`;
       case 'slump':
@@ -2234,7 +2240,7 @@ function confirmacionDe(campo, datos, idioma = 'es') {
     case 'direccion':
       return `anotada la *dirección*`;
     case 'fecha':
-      return `anotado el día: *${datos.fecha}*`;
+      return `anotado el día: *${fechaConDiaSemana(datos.fecha, 'es')}*`;
     case 'hora':
       return `anotada la hora: *${datos.hora}*`;
     case 'slump':
@@ -2274,7 +2280,7 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
       case 'direccion':
         return `changed to the address: *${datos.direccion}*`;
       case 'fecha':
-        return `changed to the day: *${datos.fecha}*`;
+        return `changed to the day: *${fechaConDiaSemana(datos.fecha, 'en')}*`;
       case 'hora':
         return `changed to the time: *${datos.hora}*`;
       case 'nombre':
@@ -2306,7 +2312,7 @@ function confirmacionCorreccionDe(campo, datos, idioma = 'es') {
     case 'direccion':
       return `lo dejo en la dirección: *${datos.direccion}*`;
     case 'fecha':
-      return `lo dejo para el día: *${datos.fecha}*`;
+      return `lo dejo para el día: *${fechaConDiaSemana(datos.fecha, 'es')}*`;
     case 'hora':
       return `lo dejo a la hora: *${datos.hora}*`;
     case 'slump':
@@ -3015,6 +3021,23 @@ function resolverFechaMs(fechaTexto) {
     if (ms < base) ms = Date.UTC(Y + 1, meses[mMesEN[1]], +mMesEN[2]);
     return ms;
   }
+  // Día del mes SUELTO («el 20», «20», «para el 20»): es la
+  // forma que el respaldo del paso del día guarda tal cual, y
+  // sin resolverla no se podía decir en qué día de la semana
+  // cae (orden del dueño, 2026-11-04: hay que deducir el día,
+  // porque no se sabe si es domingo). Manda el mes en curso, o
+  // el próximo si ese día ya pasó; si el día no existe en el
+  // mes que toca (ej. «el 31» en abril), no se resuelve.
+  const mSuelto = t.match(/^(?:para\s+)?(?:el\s+|dia\s+|the\s+)?(\d{1,2})$/);
+  if (mSuelto) {
+    const diaSuelto = +mSuelto[1];
+    if (diaSuelto >= 1 && diaSuelto <= 31) {
+      let ms = Date.UTC(Y, M - 1, diaSuelto);
+      if (ms < base) ms = Date.UTC(Y, M, diaSuelto);
+      if (new Date(ms).getUTCDate() === diaSuelto) return ms;
+    }
+    return null;
+  }
   return null;
 }
 
@@ -3022,6 +3045,73 @@ function resolverFechaMs(fechaTexto) {
 function fechaEsDomingo(fechaTexto) {
   const ms = resolverFechaMs(fechaTexto);
   return ms !== null && new Date(ms).getUTCDay() === 0;
+}
+
+/**
+ * La fecha PARA MOSTRAR, con su día de semana deducido de la
+ * fecha real (orden del dueño, 2026-11-04 00:42: «Tienes que
+ * deducir qué día cae el 20 de noviembre, porque no sabemos
+ * si es domingo»): «20 de noviembre» se muestra «viernes 20 de
+ * noviembre» y «November 20» como «Friday, November 20». El
+ * cálculo sale SIEMPRE de resolverFechaMs — la misma fecha
+ * validada contra el calendario que usa la regla de domingos,
+ * en la zona del negocio — nunca de texto sin parsear. Si la
+ * fecha no se puede resolver («la próxima semana»), se muestra
+ * el texto tal como lo dio el cliente.
+ */
+function fechaConDiaSemana(fechaTexto, idioma = 'es') {
+  const ms = resolverFechaMs(fechaTexto);
+  if (ms === null) return fechaTexto;
+  const f = new Date(ms);
+  const dia = f.getUTCDate();
+  const mes = f.getUTCMonth();
+  const ds = f.getUTCDay();
+  return idioma === 'en'
+    ? `${DIAS_SEMANA_EN[ds]}, ${MESES_NOMBRE_EN[mes]} ${dia}`
+    : `${DIAS_SEMANA_ES[ds]} ${dia} de ${MESES_NOMBRE_ES[mes]}`;
+}
+
+/**
+ * ¿El cliente pregunta QUÉ DÍA DE LA SEMANA cae la fecha?
+ * («¿qué día cae?», «¿cae en domingo?», «what day does it
+ * fall on?», «is it a Sunday?»…). Es una PREGUNTA sobre la
+ * fecha ya dada — o sobre la que trae el mismo mensaje —,
+ * nunca un dato del flujo: se responde el día real y se
+ * retoma el paso (ver el bloque en manejarFlujo), como con
+ * las preguntas de precio o del aire.
+ */
+function esPreguntaDiaSemana(texto) {
+  const t = normalizar(texto);
+  if (!t) return false;
+  if (/\bque dia\b/.test(t) && /\b(cae|caeria|es|seria|toca)\b/.test(t)) return true;
+  if (/\bdia de la semana\b/.test(t)) return true;
+  if (/\bcae (en |el )?domingo\b/.test(t)) return true;
+  if (/\?/.test(texto) && /\b(es|seria|cae) (en )?(el )?domingo\b/.test(t)) return true;
+  if (/\bwhat day (does|is|will|did)\b/.test(t)) return true;
+  if (/\bwhat weekday\b/.test(t)) return true;
+  if (/\bfalls? on (a |an )?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/.test(t)) return true;
+  if (/\bis (it|that|this) (on )?(a )?sunday\b/.test(t)) return true;
+  return false;
+}
+
+/**
+ * Línea que RESPONDE en qué día de la semana cae una fecha:
+ * «El *20 de noviembre* cae *viernes*.» / «*November 20*
+ * falls on a *Friday*.» La fecha y el día salen de
+ * resolverFechaMs (la fecha real validada); si el texto no
+ * se puede resolver, devuelve null y quien llama pide la
+ * fecha concreta.
+ */
+function lineaDiaSemana(fechaTexto, idioma = 'es') {
+  const ms = resolverFechaMs(fechaTexto);
+  if (ms === null) return null;
+  const f = new Date(ms);
+  const dia = f.getUTCDate();
+  const mes = f.getUTCMonth();
+  const ds = f.getUTCDay();
+  return idioma === 'en'
+    ? `*${MESES_NOMBRE_EN[mes]} ${dia}* falls on a *${DIAS_SEMANA_EN[ds]}*.`
+    : `El *${dia} de ${MESES_NOMBRE_ES[mes]}* cae *${DIAS_SEMANA_ES[ds]}*.`;
 }
 
 /**
@@ -4074,6 +4164,53 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
         intentDetectado,
       };
     }
+  }
+  if (paso && esPreguntaDiaSemana(textoCliente) && !detectados.fechaInvalida) {
+    // PREGUNTA POR EL DÍA DE SEMANA (defecto en vivo del
+    // dueño, 2026-11-04 00:40): el cliente dio la fecha («Para
+    // 20 de noviembre»), el bot la anotó y preguntó la hora, y
+    // el cliente preguntó «Que día cae ??» — el bot NO
+    // respondió el día: repitió la pregunta de la hora con el
+    // prefijo de continuación. Orden del dueño (00:42): el bot
+    // TIENE que deducir qué día de semana cae la fecha, porque
+    // importa saber si es domingo. Se responde con la fecha
+    // REAL ya capturada (o la que traiga el mismo mensaje),
+    // resuelta por resolverFechaMs — la misma fecha validada
+    // de la regla de domingos — y DESPUÉS se retoma la
+    // pregunta del paso actual, como con el aire y el precio.
+    // Si no hay fecha capturada ni en el mensaje, se pide la
+    // fecha. Si el mensaje trae una fecha imposible, no se
+    // entra aquí: manda la corrección de la ronda 28.
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+    const partesDia = [];
+    if (corregidos.length) {
+      partesDia.push(
+        `${idioma === 'en' ? 'Got it, updated' : 'Perfecto, lo corrijo'}: ${corregidos.map((c) => confirmacionCorreccionDe(c, flow.datos, idioma)).join('; ')}.`
+      );
+    }
+    if (nuevos.length) {
+      partesDia.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
+    }
+    const lineaDia =
+      lineaDiaSemana(flow.datos.fecha, idioma) || lineaDiaSemana(textoCliente, idioma);
+    if (lineaDia) {
+      partesDia.push(lineaDia);
+    } else {
+      partesDia.push(
+        idioma === 'en'
+          ? "I don't have the delivery day yet — tell me the date and I'll tell you what day of the week it falls on."
+          : 'Todavía no tengo el día de la entrega: páseme la fecha y le digo qué día de la semana cae.'
+      );
+    }
+    partesDia.push(preguntaPara(paso, flow.datos, idioma));
+    return {
+      responder: true,
+      texto: partesDia.join('\n'),
+      intent: flow.tipo,
+      topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+      intentDetectado,
+    };
   }
   if (!paso) {
     // Flujo completo: cierre al cliente + confirmación armada.
@@ -6023,6 +6160,10 @@ module.exports = {
   fechaCortaEntrega,
   fechaEsDomingo,
   fechaExplicitaInvalida,
+  resolverFechaMs,
+  fechaConDiaSemana,
+  esPreguntaDiaSemana,
+  lineaDiaSemana,
   esPreguntaPrecio,
   esPreguntaPrecioPorYarda,
   lineaPrecioPorYarda,
