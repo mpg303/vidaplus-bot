@@ -24,6 +24,17 @@
 // intacta en el registro de Orders. Lo que habla DE la
 // orden («mi orden», cambiar, corregir, su pago) sigue
 // como corrección o nota del especialista.
+// ACTUALIZACIÓN 2026-11-04 (orden del dueño 08:39, «Sí,
+// agrega la respuesta directa de "vendemos concreto"»): la
+// paridad con el cliente nuevo ya NO es el respaldo genérico
+// «no le entendí»: AMBOS reciben la RESPUESTA DIRECTA fija
+// («¡Claro que sí! Vendemos concreto por yarda cúbica en
+// Dallas–Fort Worth. ¿Cuántas yardas necesita?» / EN). Las
+// aserciones de esta suite se actualizaron a ese texto; las
+// guardas de la orden quedan idénticas. La cobertura fina
+// de la directa (detector, continuación con la cantidad,
+// pregunta lateral a mitad del flujo) vive en
+// respuesta-directa.test.js.
 // Correr: node tests/venden-concreto.test.js
 // ============================================================
 const fs = require('fs');
@@ -78,6 +89,10 @@ function turno(conv, texto) {
 
 const NOTA_ES = 'quedó anotado para el especialista';
 const NOTA_EN = 'has been noted for the specialist';
+const DIRECTA_ES =
+  '¡Claro que sí! Vendemos concreto por yarda cúbica en Dallas–Fort Worth. ¿Cuántas yardas necesita?';
+const DIRECTA_EN =
+  'Yes, we do! We sell concrete by the cubic yard in Dallas–Fort Worth. How many yards do you need?';
 
 // Orden completa de Dallas (mismo guion de las demás suites).
 function ordenCerrada(waId, nombre) {
@@ -97,7 +112,10 @@ function ordenCerrada(waId, nombre) {
 {
   const conv = db.upsertConversation('15551110001', 'Sin Orden');
   const r = turno(conv, 'Venden concreto?');
-  check('base: cliente nuevo «Venden concreto?» queda en intent «otro»', r.d.intent === 'otro', r.d.intent);
+  check('base: cliente nuevo «Venden concreto?» recibe la RESPUESTA DIRECTA',
+    r.d.texto === DIRECTA_ES, r.d.texto);
+  check('base: cliente nuevo sale con intent «venden_concreto»',
+    r.d.intent === 'venden_concreto', r.d.intent);
   check('base: cliente nuevo NO recibe la nota del especialista', !(r.d.texto || '').includes(NOTA_ES));
   var textoBaseNuevo = r.d.texto;
 }
@@ -118,8 +136,8 @@ function ordenCerrada(waId, nombre) {
     !(r.d.texto || '').includes(NOTA_ES), r.d.texto);
   check('captura: «Venden concreto?» ya NO sale con intent «postcierre»',
     r.d.intent !== 'postcierre', r.d.intent);
-  check('captura: «Venden concreto?» queda en intent «otro» (capa IA elegible, como cliente nuevo)',
-    r.d.intent === 'otro', r.d.intent);
+  check('captura: «Venden concreto?» recibe la RESPUESTA DIRECTA del dueño',
+    r.d.texto === DIRECTA_ES, r.d.texto);
   check('captura: la respuesta es IDÉNTICA a la de un cliente nuevo',
     r.d.texto === textoBaseNuevo, r.d.texto);
 
@@ -134,7 +152,8 @@ function ordenCerrada(waId, nombre) {
   const r = turno(conv, 'Venden concreto?');
   check('directo: «Venden concreto?» tras el cierre NO es nota del especialista',
     !(r.d.texto || '').includes(NOTA_ES), r.d.texto);
-  check('directo: queda en intent «otro»', r.d.intent === 'otro', r.d.intent);
+  check('directo: recibe la respuesta directa (puede anteponerse la frase de retomada de siempre)',
+    (r.d.texto || '').includes(DIRECTA_ES), r.d.texto);
 }
 
 // ---------- Variante EN: «Do you sell concrete?» ----------
@@ -143,8 +162,8 @@ function ordenCerrada(waId, nombre) {
   const r = turno(conv, 'Do you sell concrete?');
   check('EN: «Do you sell concrete?» NO es nota del especialista',
     !(r.d.texto || '').includes(NOTA_EN) && !(r.d.texto || '').includes(NOTA_ES), r.d.texto);
-  check('EN: queda en intent «otro» y responde en inglés',
-    r.d.intent === 'otro' && (r.d.texto || '').includes("didn't quite get that"), r.d.texto);
+  check('EN: recibe la respuesta directa en inglés',
+    (r.d.texto || '').includes(DIRECTA_EN), r.d.texto);
 }
 
 // ---------- Otra pregunta de servicio: «¿Venden concreto en Fort Worth?» ----------

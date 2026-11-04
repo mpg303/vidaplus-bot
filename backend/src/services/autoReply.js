@@ -3910,6 +3910,11 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // con una pregunta suya.
   const cuandoPedir = !saludoPuro && !faq && !ciudad ? preguntaCuandoPedir(textoCliente) : null;
   const pagoAdelantado = !saludoPuro && !faq ? preguntaPagoAdelantado(textoCliente) : null;
+  // ¿VENDEN CONCRETO? (orden del dueño, 2026-11-04): también
+  // es PREGUNTA bajo la regla general de arriba — se responde
+  // la directa y se retoma el paso (bloque lateral más abajo,
+  // junto al del día de semana); jamás se guarda como dato.
+  const venden = !saludoPuro && !faq && !ciudad ? esPreguntaVendenConcreto(textoCliente) : false;
 
   let detectados = {};
   let omitirCaptura = saludoPuro || !!faq || !!ciudad;
@@ -3929,6 +3934,24 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // dato se captura y la respuesta a la pregunta se agrega.
   const preguntaPedido = !!cuandoPedir && !detectados.fecha && !detectados.hora;
   if (preguntaPedido) {
+    detectados = {};
+    omitirCaptura = true;
+  }
+  // ¿VENDEN CONCRETO? SIN DATO REAL: no se captura NADA de la
+  // pregunta — en el paso de dirección, la captura libre
+  // guardaba la pregunta misma («Venden concreto?») como si
+  // fuera la dirección de la obra. Solo cuentan como dato
+  // real los campos con valor fuera de los de texto libre
+  // del paso (dirección/nombre/compañía); si el mensaje trae
+  // ADEMÁS un dato real (yardas, mix, fecha…), ese dato SÍ se
+  // anota y la respuesta lateral lo confirma junto con la
+  // directa.
+  const vendenSinDato =
+    venden &&
+    !Object.keys(detectados).some(
+      (k) => detectados[k] && !['direccion', 'nombre', 'compania'].includes(k)
+    );
+  if (vendenSinDato) {
     detectados = {};
     omitirCaptura = true;
   }
@@ -4264,6 +4287,40 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     return {
       responder: true,
       texto: partesDia.join('\n'),
+      intent: flow.tipo,
+      topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+      intentDetectado,
+    };
+  }
+  if (paso && esPreguntaVendenConcreto(textoCliente)) {
+    // ¿VENDEN CONCRETO? A MITAD DEL FLUJO (orden del dueño,
+    // 2026-11-04): pregunta lateral suelta — se responde la
+    // directa, palabra por palabra, y se retoma el paso en el
+    // que íbamos, como con el aire y el día de semana; el
+    // flujo NO se toca. Si el paso actual ES el de las yardas,
+    // la directa ya trae la pregunta del paso («¿Cuántas
+    // yardas necesita?») y no se repite; en cualquier otro
+    // paso se vuelve a preguntar el dato del paso al final.
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+    const partesVenden = [];
+    if (corregidos.length) {
+      partesVenden.push(
+        `${idioma === 'en' ? 'Got it, updated' : 'Perfecto, lo corrijo'}: ${corregidos.map((c) => confirmacionCorreccionDe(c, flow.datos, idioma)).join('; ')}.`
+      );
+    }
+    if (nuevos.length) {
+      partesVenden.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
+    }
+    partesVenden.push(
+      idioma === 'en' ? RESPUESTA_VENDEN_CONCRETO_EN : RESPUESTA_VENDEN_CONCRETO_ES
+    );
+    if (paso !== 'yardas') {
+      partesVenden.push(preguntaPara(paso, flow.datos, idioma));
+    }
+    return {
+      responder: true,
+      texto: partesVenden.join('\n'),
       intent: flow.tipo,
       topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
       intentDetectado,
@@ -5536,6 +5593,67 @@ function esInicioNuevaConsulta(texto) {
   return false;
 }
 
+/**
+ * ¿VENDEN CONCRETO? — RESPUESTA DIRECTA (orden del dueño,
+ * 2026-11-04 08:39: «Sí, agrega la respuesta directa de
+ * "vendemos concreto"»). Hasta hoy la pregunta caía en el
+ * respaldo genérico «no le entendí» y solo la rescataba la
+ * capa IA; el dueño pidió ADEMÁS la respuesta fija y directa,
+ * palabra por palabra:
+ *   ES «¡Claro que sí! Vendemos concreto por yarda cúbica en
+ *      Dallas–Fort Worth. ¿Cuántas yardas necesita?»
+ *   EN «Yes, we do! We sell concrete by the cubic yard in
+ *      Dallas–Fort Worth. How many yards do you need?»
+ * El detector es ESTRECHO (verbo de vender/tener/ofrecer +
+ * concreto, ES/EN) y EXCLUYE todo lo que hable de la orden
+ * existente —«mi orden», referencia con número, cambiar/
+ * corregir/cancelar—: eso sigue como corrección o nota
+ * post-cierre, como siempre. También excluye la pregunta de
+ * precio («¿cuánto cuesta el concreto que venden?»), que ya
+ * tiene su ruta. La respuesta se da en tres caminos: cliente
+ * nuevo sin historial, conversación post-cierre (la pregunta
+ * ya salía del post-cierre por esInicioNuevaConsulta) y a
+ * mitad de un flujo, como pregunta lateral que responde y
+ * retoma el paso (patrón del aire y del día de semana).
+ * En los caminos SIN flujo, la respuesta ABRE la cotización
+ * (mismo patrón de la pregunta del aire suelta y de la
+ * cobertura por ciudad: explicar y abrir el flujo para que
+ * la respuesta no se pierda): la conversación queda en el
+ * paso de las yardas —que es justo lo que la respuesta
+ * pregunta— y un «10» pelón ya se captura como yardas (la
+ * captura libre sin flujo solo anota la cantidad cuando el
+ * mensaje trae la unidad: «10 yardas»).
+ */
+const RESPUESTA_VENDEN_CONCRETO_ES =
+  '¡Claro que sí! Vendemos concreto por yarda cúbica en Dallas–Fort Worth. ¿Cuántas yardas necesita?';
+const RESPUESTA_VENDEN_CONCRETO_EN =
+  'Yes, we do! We sell concrete by the cubic yard in Dallas–Fort Worth. How many yards do you need?';
+
+function esPreguntaVendenConcreto(texto) {
+  const t = ` ${normalizar(texto)} `;
+  if (!t || t.trim().length < 3) return false;
+  // Habla de la orden existente: jamás es esta pregunta.
+  if (
+    detectarReferenciaOrden(texto) ||
+    /\b(mi|la|esa|esta|su) orden\b/.test(t) ||
+    /\bmy order\b/.test(t) ||
+    /\b(cambiar|cambien|cambio de|corregir|corrige|cancelar|cancela|change|correct|cancel)\b/.test(t)
+  ) {
+    return false;
+  }
+  // La pregunta de PRECIO tiene su propia ruta.
+  if (esPreguntaPrecio(texto)) return false;
+  const verboVenta =
+    /\b(venden|vende|vendes|vendan|vendemos|tienen|tiene|tienes|ofrecen|ofrece|ofreces|sell|sells|selling)\b/.test(
+      t
+    );
+  const temaConcreto = /\b(concreto|hormigon|concrete)\b/.test(t);
+  if (verboVenta && temaConcreto) return true;
+  if (/\bdo you (sell|offer|have)\b[^.?!]*\bconcrete\b/.test(t)) return true;
+  if (/\byou (sell|offer)\b[^.?!]*\bconcrete\b/.test(t)) return true;
+  return false;
+}
+
 function manejarPostCierre(conversacion, textoCliente, idiomaMsg) {
   const orden = ultimaOrdenCerrada(conversacion);
   if (!orden) {
@@ -6198,6 +6316,34 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
     if (postCierre) return postCierre;
   }
 
+  // --- ¿VENDEN CONCRETO? SIN FLUJO (orden del dueño,
+  // 2026-11-04): la respuesta directa y fija, palabra por
+  // palabra — nunca más el «no le entendí» para la pregunta
+  // más básica del negocio. Va DESPUÉS del bloque post-cierre:
+  // si la conversación tiene una orden cerrada, la pregunta
+  // ya salió de ahí por esInicioNuevaConsulta (y lo que habla
+  // DE la orden ni llega: el detector lo excluye y el
+  // post-cierre lo atiende primero). Y va después de la
+  // cobertura por ciudad: «¿Venden concreto en Fort Worth?»
+  // sigue siendo pregunta de zona. Al responder se ABRE la
+  // cotización en el paso de las yardas (la respuesta misma
+  // pregunta cuántas yardas): así la cantidad que conteste
+  // el cliente —«10» o «10 yardas»— la captura el paso,
+  // igual que en la pregunta del aire suelta.
+  if (intent.id === 'otro' && esPreguntaVendenConcreto(textoCliente)) {
+    conversacion.flow = flujoNuevo('cotizacion', textoCliente);
+    db.setConversationFlow(conversacion.id, conversacion.flow);
+    return {
+      responder: true,
+      texto:
+        idiomaMsg === 'en'
+          ? RESPUESTA_VENDEN_CONCRETO_EN
+          : RESPUESTA_VENDEN_CONCRETO_ES,
+      intent: 'venden_concreto',
+      topic: 'si vendemos concreto',
+    };
+  }
+
   // --- Retoma tras despertar de needsHuman con un saludo puro y
   // sin flujo en curso: saludo breve de continuación, sin la
   // bienvenida completa y sin repetir la orden anterior.
@@ -6307,6 +6453,7 @@ module.exports = {
   lineaDiaSemana,
   esPreguntaPrecio,
   esPreguntaPrecioPorYarda,
+  esPreguntaVendenConcreto,
   lineaPrecioPorYarda,
   preguntaSobreAire,
   recomendacionAire,
