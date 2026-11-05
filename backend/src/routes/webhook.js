@@ -20,6 +20,7 @@ const { sendText, markAsRead } = require('../services/send');
 const { decidirRespuesta, detectarIdioma } = require('../services/autoReply');
 const iaPrompts = require('../services/iaPrompts');
 const { enviarFormaTarjeta, mensajeInstruccionesForma } = require('../services/formaTarjeta');
+const { enviarFormaProyecto, mensajeInstruccionesFormaProyecto } = require('../services/formaProyecto');
 const followup = require('../services/followup');
 
 const router = express.Router();
@@ -283,6 +284,66 @@ async function procesarMensajeEntrante(msg, nombrePerfil) {
         text: '[forma de autorización de tarjeta de crédito enviada]',
         status: 'failed',
         flags: { tipo: 'forma_tarjeta', auto: true, error: e.message },
+      });
+    }
+  }
+
+  // 3d. PAGAR DESPUÉS DE LA TIRADA (orden de Jesus, 2026-11-04):
+  //     si el cliente pidió pagar después de la entrega, se le
+  //     envía AUTOMÁTICAMENTE la forma de información del
+  //     proyecto como documento de WhatsApp, seguida del mensaje
+  //     con las instrucciones (llenarla con los datos de la
+  //     propiedad, del contratista y del dueño, y devolverla por
+  //     aquí). Se abre la espera de la forma en la conversación
+  //     (formaProyecto 'pendiente'): cuando el cliente la
+  //     devuelve, autoReply confirma la recepción y el caso
+  //     queda con el equipo (la conversación ya quedó marcada
+  //     needsHuman por autoReply: la aprobación de esa forma de
+  //     pago la decide Jesus, y la orden NO se cerró).
+  if (decision.formaProyecto) {
+    const idiomaForma = decision.idiomaForma || 'es';
+    db.setFormaProyecto(conv.id, {
+      estado: 'pendiente',
+      idioma: idiomaForma,
+      enviadoAt: new Date().toISOString(),
+      recibidaAt: null,
+    });
+    db.setNeedsHuman(conv.id, true);
+    try {
+      const metaIdDoc = await enviarFormaProyecto(waId);
+      db.addMessage({
+        conversationId: conv.id,
+        waId,
+        sender: 'BOT',
+        type: 'document',
+        text: '[forma de información del proyecto enviada]',
+        metaId: metaIdDoc,
+        status: 'sent',
+        flags: { tipo: 'forma_proyecto', auto: true },
+      });
+      const instrucciones = mensajeInstruccionesFormaProyecto(idiomaForma);
+      const metaIdTxt = await sendText(waId, instrucciones);
+      db.addMessage({
+        conversationId: conv.id,
+        waId,
+        sender: 'BOT',
+        type: 'text',
+        text: instrucciones,
+        metaId: metaIdTxt,
+        status: 'sent',
+        flags: { intent: 'forma_proyecto', auto: true },
+      });
+      console.log(`[webhook] forma de información del proyecto enviada — ${waId}`);
+    } catch (e) {
+      console.error('[webhook] no se pudo enviar la forma de información del proyecto:', e.message);
+      db.addMessage({
+        conversationId: conv.id,
+        waId,
+        sender: 'BOT',
+        type: 'document',
+        text: '[forma de información del proyecto enviada]',
+        status: 'failed',
+        flags: { tipo: 'forma_proyecto', auto: true, error: e.message },
       });
     }
   }

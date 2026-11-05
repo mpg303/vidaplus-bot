@@ -22,16 +22,19 @@
 // 49), Jesus escribió «Dame precio» en el paso del pago y el
 // bot evadió OTRA VEZ con la línea genérica. Causa raíz: (1)
 // precioYardaDeLaOrden anulaba la cifra ante CUALQUIER pompa
-// — confundía el SERVICIO de pompa (sin precio: la orden
-// cierra sin total) con el precio del CONCRETO por yarda, que
-// sí se conoce; (2) la conversión a «Trailer pump mix 50-50»
+// — confundía la pompa con un supuesto servicio sin precio
+// con el precio del CONCRETO por yarda, que sí se conoce;
+// (2) la conversión a «Trailer pump mix 50-50»
 // descartaba el psi base. Arreglo: la conversión guarda el
 // psi base en datos.mixBase (y lo actualiza si el cliente
 // corrige el psi); el precio por yarda con trailer es
 // base + $5 (el pompa mix) CON su desglose; con boom es el
-// psi tal cual; con pompa la línea aclara que el costo del
-// SERVICIO lo confirma el especialista y la orden sigue
-// cerrando SIN total. La pregunta genérica de precio («Dame
+// psi tal cual. ACLARACIÓN DEL DUEÑO (2026-11-04, «cuando yo
+// vendo cemento no busco pump, solo pregunto para saber el
+// mix que se va a usar»): la pompa NO es un servicio de JMP
+// — la línea de precio ya NO aclara ningún «costo del
+// servicio» y la orden con pompa cierra CON total, como
+// cualquier otra. La pregunta genérica de precio («Dame
 // precio») va concreta en cualquier paso si mix + Dallas ya
 // venían de turnos anteriores; el turno que trae el volcado
 // de datos conserva la línea genérica aprobada. «Pompa mix
@@ -239,7 +242,7 @@ function hastaPagoTrailer(waId, psi = 5000) {
   return { conv, ultimo: r.d.texto || '' };
 }
 const LINEA_TRAILER_5000 =
-  '💰 El precio por yarda del *Trailer pump mix 50-50* en Dallas es de *$185.00* (el mix 5000 psi cuesta $180.00 y el pompa mix suma $5.00 por yarda), más los taxes del 8.25%. El costo del servicio de pompa se lo confirma el especialista.';
+  '💰 El precio por yarda del *Trailer pump mix 50-50* en Dallas es de *$185.00* (el mix 5000 psi cuesta $180.00 y el pompa mix suma $5.00 por yarda), más los taxes del 8.25%.';
 const PREGUNTA_PAGO = '¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta de crédito, Zelle o cheque?';
 
 {
@@ -255,9 +258,9 @@ const PREGUNTA_PAGO = '¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta
     !!r.conv.flow && !r.conv.flow.datos.pago && r.conv.flow.ordenMostrada === true,
     JSON.stringify(r.conv.flow && r.conv.flow.datos));
   const r2 = turno(r.conv, 'Efectivo');
-  check('Trailer captura: tras «Efectivo» la orden cierra con número y SIN total (el servicio de pompa no tiene precio)',
+  check('Trailer captura: tras «Efectivo» la orden cierra con número y CON total (la pompa solo define el mix: (180+5)×7×1.0825 = $1,401.84)',
     (r2.d.texto || '').includes('número de orden') && !r2.conv.flow &&
-    !(r2.d.confirmacionArmada || '').includes('Total:'), r2.d.texto);
+    (r2.d.confirmacionArmada || '').includes('Total: $1,401.84'), r2.d.confirmacionArmada);
 }
 {
   // Trailer con cada psi restante: precio = base + $5, con su
@@ -266,15 +269,16 @@ const PREGUNTA_PAGO = '¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta
     const { conv } = hastaPagoTrailer(`4000000004${psi / 100}`, psi);
     const r = turno(conv, 'Cuánto sale por la yarda ?');
     const texto = r.d.texto || '';
-    check(`Trailer ${psi} psi: precio $${base + 5}.00 (base $${base}.00 + $5 del pompa mix) con desglose`,
+    check(`Trailer ${psi} psi: precio $${base + 5}.00 (base $${base}.00 + $5 del pompa mix) con desglose y SIN nota de servicio`,
       texto.includes(`*$${base + 5}.00*`) && texto.includes(`el mix ${psi} psi cuesta $${base}.00`) &&
-      texto.includes('El costo del servicio de pompa se lo confirma el especialista.'), texto);
+      !texto.includes('servicio de pompa') && !texto.includes('especialista'), texto);
   }
 }
 {
   // BOOM pump (4000 psi): el precio por yarda es el del psi
-  // TAL CUAL ($170.00, sin el +$5 del pompa mix), con la
-  // aclaración del servicio; la orden cierra sin total.
+  // TAL CUAL ($170.00, sin el +$5 del pompa mix), SIN nota de
+  // servicio (la pompa no es un servicio de JMP); la orden
+  // cierra CON total.
   let conv = nuevaConv('40000000050', 'Cliente Precio Boom');
   let r;
   for (const paso of ['Hola, necesito concreto', '7 yds', '4000 psi', 'No aire', 'Sí', 'Boom',
@@ -283,12 +287,12 @@ const PREGUNTA_PAGO = '¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta
   }
   r = turno(conv, 'Dame precio');
   const texto = r.d.texto || '';
-  check('Boom: «Dame precio» da el psi tal cual ($170.00 del 4000 psi) + aclaración del servicio',
+  check('Boom: «Dame precio» da el psi tal cual ($170.00 del 4000 psi) y SIN nota de servicio',
     texto.includes('del mix *4000 psi*') && texto.includes('$170.00') && !texto.includes('$175.00') &&
-    texto.includes('El costo del servicio de pompa se lo confirma el especialista.'), texto);
+    !texto.includes('servicio de pompa') && !texto.includes('especialista'), texto);
   const r2 = turno(r.conv, 'Efectivo');
-  check('Boom: la orden cierra con número y SIN total tras el pago',
-    !r2.conv.flow && !(r2.d.confirmacionArmada || '').includes('Total:'), r2.d.confirmacionArmada);
+  check('Boom: la orden cierra con número y CON total tras el pago (170×7×1.0825 = $1,288.18)',
+    !r2.conv.flow && (r2.d.confirmacionArmada || '').includes('Total: $1,288.18'), r2.d.confirmacionArmada);
 }
 {
   // «Pompa mix 50-50» pedida COMO MIX y trailer elegido
@@ -368,11 +372,79 @@ const PREGUNTA_PAGO = '¿Cómo va a pagar: efectivo, tarjeta de débito, tarjeta
   r = turno(conv, 'give me the price');
   const texto = r.d.texto || '';
   const lineaEN =
-    '💰 The price per yard for the *Trailer pump mix 50-50* in Dallas is *$185.00* (the 5000 psi mix is $180.00 and the pump mix adds $5.00 per yard), plus 8.25% taxes. The pump service cost will be confirmed by the specialist.';
+    '💰 The price per yard for the *Trailer pump mix 50-50* in Dallas is *$185.00* (the 5000 psi mix is $180.00 and the pump mix adds $5.00 per yard), plus 8.25% taxes.';
   check('EN trailer: «give me the price» responde el TEXTO EXACTO en inglés ($185.00 con desglose)',
     texto === `${lineaEN}\nHow will you pay: cash, debit card, credit card, Zelle or check?`, texto);
   check('EN trailer: sin la línea genérica EN y la pregunta de pago se retoma UNA sola vez',
     !texto.includes('Price depends on the job address') && veces(texto, 'How will you pay') === 1, texto);
+}
+
+{
+  // (8) FIX DE POMPA (aclaración del dueño, 2026-11-04:
+  // «cuando yo vendo cemento no busco pump, solo pregunto
+  // para saber el mix que se va a usar»): el RESUMEN al
+  // cliente de la orden con TRAILER ya trae su total.
+  const { ultimo } = hastaPagoTrailer('40000000060');
+  check('Fix pompa: el resumen al cliente de la orden con TRAILER trae su total ($1,401.84)',
+    ultimo.includes('Total: $1,401.84'), ultimo);
+}
+{
+  // (8) BOOM: el resumen al cliente también trae el total.
+  let conv = nuevaConv('40000000061', 'Cliente Boom Total');
+  let r;
+  for (const paso of ['Hola, necesito concreto', '7 yds', '4000 psi', 'No aire', 'Sí', 'Boom',
+    '3069 forest ln Dallas tx', '20 de noviembre', '7:00', 'Am', 'Juan Perez', 'No tengo']) {
+    r = turno(conv, paso); conv = r.conv;
+  }
+  check('Fix pompa: el resumen al cliente de la orden con BOOM trae su total ($1,288.18)',
+    (r.d.texto || '').includes('Total: $1,288.18'), r.d.texto);
+}
+{
+  // (8) Pedido EXPRESO de que JMP consiga la pompa, sin
+  // flujo: pasa a un humano (needsHuman), sin prometer nada
+  // y sin cotizar ese servicio (que no existe en JMP).
+  let conv = nuevaConv('40000000062', 'Cliente Pide Pompa');
+  const r = turno(conv, '¿Me consiguen una pompa para mi obra?');
+  check('Fix pompa: «¿Me consiguen una pompa?» pasa a un humano (intent pompa_servicio, needsHuman)',
+    r.d.intent === 'pompa_servicio' && r.conv.needsHuman === true, JSON.stringify(r.d));
+  check('Fix pompa: la respuesta NO promete ni cotiza el servicio (sin $ y sin prometer confirmación)',
+    (r.d.texto || '').includes('nuestro equipo') && !/\$/.test(r.d.texto || '') &&
+    !(r.d.texto || '').includes('confirmamos'), r.d.texto);
+}
+{
+  // (8) Lo mismo en inglés, sin flujo.
+  let conv = nuevaConv('40000000063', 'Client Asks Pump');
+  const r = turno(conv, 'Can you get me a pump for my job?');
+  check('Fix pompa EN: «Can you get me a pump?» pasa a un humano con el texto en inglés',
+    r.d.intent === 'pompa_servicio' && r.conv.needsHuman === true &&
+    (r.d.texto || '').includes('our team'), r.d.texto);
+}
+{
+  // (8) La petición DENTRO del flujo: no se captura como
+  // dato de pompa, marca al humano, el flujo SIGUE abierto
+  // en el paso del pago y la orden puede cerrar CON total.
+  const { conv } = hastaPagoTrailer('40000000064');
+  let r = turno(conv, '¿Ustedes me consiguen la pompa?');
+  check('Fix pompa en flujo: la petición pasa a un humano y el flujo sigue en el paso del pago',
+    r.d.intent === 'pompa_servicio' && r.conv.needsHuman === true &&
+    !!r.conv.flow && !r.conv.flow.datos.pago, JSON.stringify(r.d));
+  const r2 = turno(r.conv, 'Efectivo');
+  check('Fix pompa en flujo: tras la petición, el cliente paga y la orden cierra CON total',
+    (r2.d.confirmacionArmada || '').includes('Total: $1,401.84'), r2.d.confirmacionArmada);
+}
+{
+  // (8) El detector distingue la petición de servicio de
+  // las respuestas-dato del paso de la pompa (que solo
+  // definen el mix) y del mix como producto.
+  const D = bot.esPidePompaServicio;
+  check('Detector pompa-servicio: las peticiones expresas (ES/EN) dan true',
+    ['¿Tienen pompa?', '¿me consiguen una bomba?', 'quiero el servicio de pompa',
+      '¿ustedes rentan pompas?', 'do you have a pump?', 'can you get me a pump?']
+      .every((s) => D(s) === true));
+  check('Detector pompa-servicio: los datos del mix y el mix-producto dan false',
+    ['sí ocupo pompa', 'boom', 'tráiler', 'sin pompa', 'necesito la pompa mix 50-50',
+      '¿venden pompa mix?', 'la pompa la pone mi contratista']
+      .every((s) => D(s) === false));
 }
 
 console.log(`\nprecio-yarda-pago: ${ok}/${total}`);

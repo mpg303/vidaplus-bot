@@ -492,10 +492,16 @@ function construirRespuesta(intentId, nombre, idioma = 'es') {
         `Dígame cuántas yardas necesita y la dirección, y se lo confirmamos enseguida.`
       );
     case 'faq_bomba':
-      // La bomba se coordina por obra: no se promete sin confirmar.
+      // JMP NO ofrece servicio de pompa (aclaración del dueño,
+      // 2026-11-04: «cuando yo vendo cemento no busco pump, solo
+      // pregunto para saber el mix que se va a usar»): la pompa
+      // la pone el cliente con su proveedor; la pregunta de la
+      // pompa en la orden es SOLO para definir el mix. Si el
+      // cliente pide expresamente que JMP le CONSIGA la pompa,
+      // manda esPidePompaServicio (pasa a un humano), no este FAQ.
       return (
-        `La bomba se coordina según su obra y la confirmamos con su orden 🙏\n` +
-        `Cuéntenos los datos de su colado y un especialista le confirma la disponibilidad.`
+        `No ofrecemos el servicio de pompa 🙏: vendemos el concreto y la pompa la pone usted con su proveedor.\n` +
+        `Cuando le pregunto por la pompa en su orden es solo para saber el mix: si va a usar pompa de arrastre (trailer), el mix que se usa es el *Pompa mix 50-50*.`
       );
     case 'gracias':
       return (
@@ -585,11 +591,14 @@ function construirRespuestaEN(intentId, nombre) {
         `confirm right away.`
       );
     case 'faq_bomba':
+      // JMP does NOT offer a pump service (owner's clarification,
+      // 2026-11-04): the customer arranges their own pump; the
+      // pump question in the order only defines the mix. An
+      // explicit request for JMP to GET them a pump goes to
+      // esPidePompaServicio (a human), not to this FAQ.
       return (
-        `A pump is coordinated based on your job, and we confirm it ` +
-        `with your order 🙏\n` +
-        `Tell us the details of your pour and a specialist will ` +
-        `confirm availability.`
+        `We don't offer a pump service 🙏: we sell the concrete, and the pump is arranged by you with your own provider.\n` +
+        `When I ask about the pump in your order it's only to know the mix: if you'll use a trailer (line) pump, the mix used is the *50-50 pump mix*.`
       );
     case 'gracias':
       return (
@@ -2466,20 +2475,18 @@ function esPreguntaPrecioPorYarda(texto) {
  * es SOLO Dallas (dirección de Dallas ya capturada) y la Pompa
  * mix 50-50 pedida como mix (sin psi base) no tiene precio
  * automático (su total lo confirma el equipo, como en
- * calcularTotalParaMix). La orden puede ocupar el SERVICIO de
- * pompa (boom / small line-trailer, aún sin precio definido):
- * eso NO anula el precio del CONCRETO por yarda, que sí se
- * conoce — el servicio sin precio es otra cosa (la orden
- * cierra sin total y ese costo lo confirma el especialista,
- * ver la marca «pompa» del resultado y lineaPrecioPorYarda).
- * Con trailer pump el mix de la orden es «Trailer pump mix
- * 50-50» y su precio por yarda es el del psi base + $5 (el
- * pompa mix): el psi base viaja en datos.mixBase. Con boom
- * pump el precio es el del psi pedido, tal cual.
+ * calcularTotalParaMix). La pompa NO es un servicio de JMP
+ * (aclaración del dueño, 2026-11-04): la pregunta solo define
+ * el mix, así que el precio del concreto por yarda se conoce
+ * siempre que el mix lo tenga. Con trailer pump el mix de la
+ * orden es «Trailer pump mix 50-50» y su precio por yarda es
+ * el del psi base + $5 (el pompa mix): el psi base viaja en
+ * datos.mixBase. Con boom pump el precio es el del psi
+ * pedido, tal cual.
  * Devuelve { uno: {mix, precio} } o { par: [{mix, precio}…] }
- * con las cotizaciones en par (ronda 10/25); con pompa, el
- * resultado lleva además la marca «pompa» (y en el caso
- * trailer, «base»/«baseMix» dentro de «uno» para el desglose).
+ * con las cotizaciones en par (ronda 10/25); en el caso
+ * trailer, «uno» lleva además «base»/«baseMix» para el
+ * desglose.
  */
 function precioYardaDeLaOrden(datos) {
   if (!datos || !direccionEsDallas(datos.direccion)) return null;
@@ -2488,7 +2495,7 @@ function precioYardaDeLaOrden(datos) {
   if (datos.mixesCotizacion && datos.mixesCotizacion.length >= 2) {
     const par = datos.mixesCotizacion.map((mix) => ({ mix, precio: PRECIOS_MIX[mix] }));
     if (par.some((p) => !(p.precio > 0))) return null;
-    return pompa ? { par, pompa } : { par };
+    return { par };
   }
   if (pompa === 'Small line / Trailer pump' || datos.mix === 'Trailer pump mix 50-50') {
     const mixBase = datos.mix === 'Trailer pump mix 50-50' ? datos.mixBase : datos.mix;
@@ -2496,12 +2503,11 @@ function precioYardaDeLaOrden(datos) {
     if (!(base > 0)) return null;
     return {
       uno: { mix: 'Trailer pump mix 50-50', precio: base + 5, base, baseMix: mixBase },
-      pompa: pompa || 'Small line / Trailer pump',
     };
   }
   const precio = PRECIOS_MIX[datos.mix];
   if (!(precio > 0)) return null;
-  return pompa ? { uno: { mix: datos.mix, precio }, pompa } : { uno: { mix: datos.mix, precio } };
+  return { uno: { mix: datos.mix, precio } };
 }
 
 /**
@@ -2515,40 +2521,34 @@ function precioYardaDeLaOrden(datos) {
 function lineaPrecioPorYarda(datos, idioma = 'es') {
   const p = precioYardaDeLaOrden(datos);
   if (!p) return null;
-  // Con pompa (boom o trailer) el precio del concreto por
-  // yarda va con su desglose si aplica (trailer: base + $5 del
-  // pompa mix) y SIEMPRE con la aclaración de que el costo del
-  // SERVICIO de pompa lo confirma el especialista (ese servicio
-  // sigue sin precio: la orden cierra sin total).
-  const notaPompa = p.pompa
-    ? idioma === 'en'
-      ? ' The pump service cost will be confirmed by the specialist.'
-      : ' El costo del servicio de pompa se lo confirma el especialista.'
-    : '';
+  // Con pompa el precio del concreto por yarda va con su
+  // desglose si aplica (trailer: base + $5 del pompa mix) y
+  // NADA más: la pompa no es un servicio de JMP (aclaración
+  // del dueño, 2026-11-04), así que no hay ningún «costo del
+  // servicio de pompa» que confirmar — la orden con pompa
+  // cierra con su total como cualquier otra.
   if (idioma === 'en') {
     if (p.par) {
       return (
         `💰 *Prices per yard in Dallas (plus ${IMPUESTOS_PCT}% taxes):*\n` +
-        p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n') +
-        notaPompa
+        p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n')
       );
     }
     if (p.uno.base) {
-      return `💰 The price per yard for the *${p.uno.mix}* in Dallas is *$${formatearDinero(p.uno.precio)}* (the ${p.uno.baseMix} mix is $${formatearDinero(p.uno.base)} and the pump mix adds $5.00 per yard), plus ${IMPUESTOS_PCT}% taxes.${notaPompa}`;
+      return `💰 The price per yard for the *${p.uno.mix}* in Dallas is *$${formatearDinero(p.uno.precio)}* (the ${p.uno.baseMix} mix is $${formatearDinero(p.uno.base)} and the pump mix adds $5.00 per yard), plus ${IMPUESTOS_PCT}% taxes.`;
     }
-    return `💰 The price per yard for the *${p.uno.mix}* mix in Dallas is *$${formatearDinero(p.uno.precio)}*, plus ${IMPUESTOS_PCT}% taxes.${notaPompa}`;
+    return `💰 The price per yard for the *${p.uno.mix}* mix in Dallas is *$${formatearDinero(p.uno.precio)}*, plus ${IMPUESTOS_PCT}% taxes.`;
   }
   if (p.par) {
     return (
       `💰 *Precios por yarda en Dallas (más los taxes del ${IMPUESTOS_PCT}%):*\n` +
-      p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n') +
-      notaPompa
+      p.par.map((x) => `• ${x.mix}: $${formatearDinero(x.precio)}`).join('\n')
     );
   }
   if (p.uno.base) {
-    return `💰 El precio por yarda del *${p.uno.mix}* en Dallas es de *$${formatearDinero(p.uno.precio)}* (el mix ${p.uno.baseMix} cuesta $${formatearDinero(p.uno.base)} y el pompa mix suma $5.00 por yarda), más los taxes del ${IMPUESTOS_PCT}%.${notaPompa}`;
+    return `💰 El precio por yarda del *${p.uno.mix}* en Dallas es de *$${formatearDinero(p.uno.precio)}* (el mix ${p.uno.baseMix} cuesta $${formatearDinero(p.uno.base)} y el pompa mix suma $5.00 por yarda), más los taxes del ${IMPUESTOS_PCT}%.`;
   }
-  return `💰 El precio por yarda del mix *${p.uno.mix}* en Dallas es de *$${formatearDinero(p.uno.precio)}*, más los taxes del ${IMPUESTOS_PCT}%.${notaPompa}`;
+  return `💰 El precio por yarda del mix *${p.uno.mix}* en Dallas es de *$${formatearDinero(p.uno.precio)}*, más los taxes del ${IMPUESTOS_PCT}%.`;
 }
 
 /**
@@ -2698,6 +2698,180 @@ const LINEA_PAGO_ADELANTADO_ES =
   'Solo el pago por *Zelle* se envía antes de cargar el concreto; el efectivo, la tarjeta y el cheque no se pagan por adelantado.';
 const LINEA_PAGO_ADELANTADO_EN =
   'Only *Zelle* payments are sent before we load the concrete; cash, card and check are not paid in advance.';
+
+/**
+ * PAGAR DESPUÉS DE LA TIRADA (orden de Jesus, 2026-11-04):
+ * cuando el cliente pide concreto y quiere pagar DESPUÉS de
+ * la tirada/entrega (a crédito, «pago luego», «net», «pay
+ * after delivery»…), necesita llenar la forma de información
+ * del proyecto con los datos de la propiedad, del contratista
+ * y del dueño. Este detector reconoce esa petición en español
+ * o inglés. OJO con las trampas:
+ * - «tarjeta de crédito» NO es pedir crédito: la palabra
+ *   «crédito» solo cuenta si el mensaje no habla de tarjeta.
+ * - Pagar A LA ENTREGA / al entregar / contra entrega es el
+ *   pago normal al momento de la entrega, NO después: no
+ *   dispara la forma.
+ * - La pregunta del momento del pago (preguntaPagoAdelantado)
+ *   también casa frases con «después» («¿puedo pagar
+ *   después?»): cuando el mensaje pide pagar después de la
+ *   tirada, manda ESTA regla (la forma), no la línea de Zelle.
+ */
+function esPidePagarDespues(texto) {
+  const t = normalizar(texto);
+  const hablaDeTarjeta = /\btarjeta(s)?\b|\bcard\b/.test(t);
+  // Crédito / fiado / cuenta (sin tarjeta de por medio).
+  if (
+    !hablaDeTarjeta &&
+    (/\ba credito\b/.test(t) ||
+      /\bon credit\b/.test(t) ||
+      /\bme (lo |la )?fi(an|a|as|an)\b/.test(t) ||
+      /\bfiado\b/.test(t) ||
+      /\bon account\b/.test(t) ||
+      /\bnet\s*\d{1,3}\b/.test(t))
+  ) {
+    return true;
+  }
+  // Español: pagar/pago + después/luego/final/terminar, o la
+  // mención directa de «después de la tirada/entrega».
+  if (
+    /\bdespues de (la |el )?(tirada|entrega|colada|descarga|trabajo)\b/.test(t) ||
+    /\b(pagar|pago|pagaria|pagarte|pagarle|pagarles)\b[^.?!]*\b(despues|mas tarde|luego|al final|al terminar|cuando terminen|cuando acaben|cuando entreguen|cuando hagan la tirada)\b/.test(t) ||
+    /\b(te|le|les) pago\b[^.?!]*\b(despues|luego|al terminar|cuando terminen|cuando entreguen)\b/.test(t)
+  ) {
+    return true;
+  }
+  // Inglés: pay + after/later/done, o «after the pour/delivery».
+  if (
+    /\bpay\b[^.?!]*\b(after|later|once (it is|its|the job is) (done|finished|poured))\b/.test(t) ||
+    /\b(after|once)\b[^.?!]*\b(pour|delivery|job is done|job is finished)\b[^.?!]*\bpay\b/.test(t) ||
+    /\bpay after\b/.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// Respuesta cuando el cliente pide pagar después de la tirada
+// (orden de Jesus, 2026-11-04): se le explica que necesita la
+// forma de información del proyecto y que el equipo revisa y
+// aprueba esa forma de pago. La forma misma la envía el
+// webhook enseguida (decision.formaProyecto), igual que la de
+// tarjeta. SIN plazos ni condiciones de crédito inventados:
+// eso lo define el especialista.
+const MENSAJE_PAGO_DESP_ES =
+  'Claro. Para pagar después de la entrega, primero necesita completar nuestra forma de información del proyecto, con los datos de la propiedad, del contratista y del dueño. Se la envío enseguida: por favor llénela y envíela de vuelta por aquí. En cuanto la recibamos, nuestro equipo revisa su caso y le confirma si su orden queda aprobada con esa forma de pago.';
+const MENSAJE_PAGO_DESP_EN =
+  "Of course. To pay after delivery, you first need to complete our project information form, with the details of the property, the contractor and the owner. I'll send it right away: please fill it out and send it back here. As soon as we receive it, our team will review your case and confirm whether your order is approved with that payment arrangement.";
+
+/**
+ * EL CLIENTE PIDE QUE JMP LE CONSIGA LA POMPA (aclaración del
+ * dueño, 2026-11-04: «cuando yo vendo cemento no busco pump,
+ * solo pregunto para saber el mix que se va a usar»): JMP NO
+ * busca ni ofrece servicio de pompa — la pompa la pone el
+ * cliente con su proveedor, y la pregunta de la pompa en el
+ * flujo es SOLO para definir el mix. Este detector reconoce
+ * cuando el cliente pide EXPRESAMENTE que JMP le
+ * consiga/busque/ofrezca la pompa o el servicio de bombeo
+ * («¿tienen pompa?», «¿me consiguen una bomba?», «quiero el
+ * servicio de pompa», «do you have a pump?», «can you get me
+ * a pump?»…): ese caso pasa a un humano (needsHuman) SIN
+ * prometer nada y SIN cotizar ese servicio.
+ * OJO con lo que NO es esta petición:
+ * - Responder la pregunta del flujo («sí ocupo pompa»,
+ *   «boom», «tráiler», «sin pompa») es el DATO del mix: lo
+ *   capturan extraerOcupaPompa/extraerPompa y jamás pasa por
+ *   aquí como petición de servicio (ninguna de esas respuestas
+ *   trae un verbo de conseguir/ofrecer hacia JMP).
+ * - «Necesito una pompa para mi trabajo» a secas tampoco: es
+ *   el cliente contando que SU trabajo lleva pompa, no que
+ *   JMP se la consiga.
+ */
+function esPidePompaServicio(texto) {
+  // El MIX como producto («pompa mix», «pump mix», «mix para
+  // pompa») NO es el servicio: se retira del texto antes de
+  // buscar la petición, para que preguntar por el mix jamás
+  // se confunda con pedir que JMP consiga la pompa.
+  const t = normalizar(texto)
+    .replace(/\bpompa\s+mix\b/g, ' ')
+    .replace(/\bpump\s+mix\b/g, ' ')
+    .replace(/\bmix\s+(de\s+|para\s+)?pompa\b/g, ' ');
+  const POMPA = '(pompa|bomba|pump)s?';
+  // La mención directa del SERVICIO de bombeo como tema con JMP.
+  if (
+    /\bservicio de (pompa|bombeo)\b/.test(t) ||
+    /\bpump(ing)? service\b/.test(t) ||
+    new RegExp(`\\b${POMPA}\\b[^.?!]*\\bcon ustedes\\b`).test(t)
+  ) {
+    return true;
+  }
+  // Español: verbo de ofrecer/conseguir con JMP como sujeto
+  // (o en imperativo hacia JMP) + la pompa en la misma frase.
+  if (
+    new RegExp(
+      `\\b(tienen|tiene|ofrecen|ofrece|ofrecer|cuentan|disponen|manejan|rentan|renta|rentar|alquilan|alquila|venden|vende|vender|consiguen|consigue|conseguir|consigueme|consiganme|buscan|busca|buscar|buscame|busquenme|proveen|provee|proveer|traen|trae|traer|traeme|mandan|manda|mandar|mandame|contratan|contrata|contratar)\\b[^.?!]*\\b${POMPA}\\b`
+    ).test(t)
+  ) {
+    return true;
+  }
+  // Inglés: «do you have/offer/rent…», «can you get/find…»,
+  // «get/find/arrange/book/hire/rent me a pump».
+  if (
+    /\b(do|does|can|could) you\b[^.?!]*\bpump\b/.test(t) ||
+    /\byou (have|offer|rent|provide|carry)\b[^.?!]*\bpump\b/.test(t) ||
+    /\b(get|find|arrange|book|hire|rent|send|bring|provide)\b[^.?!]*\bpump\b/.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+// Respuesta cuando el cliente pide que JMP le consiga la
+// pompa: el caso pasa al equipo (needsHuman) y NO se promete
+// nada — ni disponibilidad, ni precio, ni que JMP la consiga
+// (ese servicio no existe en JMP; lo decide un humano).
+const MENSAJE_POMPA_SERVICIO_ES =
+  'Claro, le paso su caso a nuestro equipo para que le atienda sobre la pompa por este mismo chat. 🙏';
+const MENSAJE_POMPA_SERVICIO_EN =
+  "Of course, I'll pass your case to our team so they can help you with the pump right here in this chat. 🙏";
+
+// Confirmación cuando el cliente devuelve la forma llena: el
+// caso ya quedó con el equipo (needsHuman) para su revisión.
+const MENSAJE_FORMA_PROYECTO_RECIBIDA_ES =
+  'Ya recibí su forma de información del proyecto. ✅ Nuestro equipo la va a revisar y le confirma si su orden queda aprobada para pagar después de la entrega. ¡Gracias!';
+const MENSAJE_FORMA_PROYECTO_RECIBIDA_EN =
+  "I received your project information form. ✅ Our team will review it and confirm whether your order is approved to pay after delivery. Thank you!";
+
+/**
+ * Registra la forma de información del proyecto que el cliente
+ * devuelve (documento o foto de la forma llenada) contra la
+ * espera abierta (conv.formaProyecto 'pendiente') y confirma
+ * la recepción. La conversación queda (o vuelve a quedar)
+ * marcada para el especialista: la aprobación la decide el
+ * equipo, no el bot.
+ */
+function manejarFormaProyecto(conversacion) {
+  const forma = { ...(conversacion.formaProyecto || {}) };
+  const idioma = forma.idioma || 'es';
+  forma.estado = 'recibida';
+  forma.recibidaAt = new Date().toISOString();
+  db.setFormaProyecto(conversacion.id, forma);
+  conversacion.formaProyecto = forma;
+  db.setNeedsHuman(conversacion.id, true);
+  conversacion.needsHuman = true;
+  conversacion.needsHumanAt = new Date().toISOString();
+  return {
+    responder: true,
+    texto:
+      idioma === 'en'
+        ? MENSAJE_FORMA_PROYECTO_RECIBIDA_EN
+        : MENSAJE_FORMA_PROYECTO_RECIBIDA_ES,
+    intent: 'forma_proyecto',
+    topic: 'su forma de información del proyecto',
+    formaProyectoRecibida: true,
+    sinPrefijoDespertar: true,
+  };
+}
 
 /**
  * La pregunta por el dato que falta, en el orden del dueño.
@@ -3157,10 +3331,14 @@ function lineaDiaSemana(fechaTexto, idioma = 'es') {
  * PRECIOS DE LOS MIXES (dictados por el dueño, 2026-10-31
  * 15:36–15:42, por yarda, SOLO DALLAS): Jesus los dictó para
  * que el bot cotice — «los precios tú ya los tienes de los
- * mixes» (2026-10-31 19:22). El SERVICIO de pompa (boom /
- * small line-trailer) sigue SIN precio definido (0 a
- * propósito): una orden que ocupa el servicio cierra sin
- * total y el equipo lo confirma.
+ * mixes» (2026-10-31 19:22). NO existe tabla de «servicio de
+ * pompa»: la pompa NO es un servicio de JMP (aclaración del
+ * dueño, 2026-11-04: «cuando yo vendo cemento no busco pump,
+ * solo pregunto para saber el mix que se va a usar») — la
+ * pregunta de la pompa solo define el mix (con trailer pump
+ * el mix es el «Trailer pump mix 50-50», psi base + $5/yd;
+ * con boom pump, el psi tal cual) y la orden cierra CON
+ * total como cualquier otra.
  */
 const PRECIOS_MIX = {
   '3000 psi': 160,
@@ -3169,10 +3347,6 @@ const PRECIOS_MIX = {
   '4000 psi': 170,
   '4500 psi': 175,
   '5000 psi': 180,
-};
-const PRECIOS_POMPA_SERVICIO = {
-  'Boom pump': 0,
-  'Small line / Trailer pump': 0,
 };
 /** Taxes de Texas que lleva TODO cálculo (regla del dueño, 2026-10-31 18:17). */
 const IMPUESTOS_PCT = 8.25;
@@ -3199,26 +3373,31 @@ function direccionEsDallas(direccion) {
 /**
  * TOTAL de la orden para UN mix dado, con la tabla de precios
  * y los taxes del 8.25% incluidos. Devuelve null (sin total:
- * el equipo lo confirma) si la dirección no es de Dallas, si
+ * el equipo lo confirma) si la dirección no es de Dallas o si
  * el mix no tiene precio en la tabla (productos sin PSI,
- * «Pompa mix 50-50» sin base) o si la orden ocupa un servicio
- * de pompa aún sin precio definido.
+ * «Pompa mix 50-50» pedida como mix, sin psi base). La pompa
+ * NUNCA anula el total (aclaración del dueño, 2026-11-04: la
+ * pompa no es un servicio de JMP, solo define el mix): con
+ * boom pump el total es el del psi tal cual, y con el mix
+ * «Trailer pump mix 50-50» es el del psi base (datos.mixBase)
+ * + $5 por yarda — sin psi base guardado no hay cifra y no se
+ * inventa ninguna.
  */
 function calcularTotalParaMix(datos, mix) {
   if (!datos || !datos.yardas || !mix) return null;
   if (!direccionEsDallas(datos.direccion)) return null;
   const yardas = parseFloat(String(datos.yardas.cantidad).replace(',', '.'));
   if (!isFinite(yardas) || yardas <= 0) return null;
-  if (mix === 'Pompa mix 50-50' || mix === 'Trailer pump mix 50-50') return null;
-  const precioYarda = PRECIOS_MIX[mix];
-  if (!(precioYarda > 0)) return null;
-  let total = yardas * precioYarda;
-  if (datos.pompa && datos.pompa !== 'Sin pompa' && datos.pompa !== 'pendiente') {
-    const precioPompa = PRECIOS_POMPA_SERVICIO[datos.pompa];
-    if (!(precioPompa > 0)) return null;
-    total += precioPompa;
+  let precioYarda;
+  if (mix === 'Trailer pump mix 50-50') {
+    const base = PRECIOS_MIX[datos.mixBase];
+    if (!(base > 0)) return null;
+    precioYarda = base + 5;
+  } else {
+    precioYarda = PRECIOS_MIX[mix];
+    if (!(precioYarda > 0)) return null;
   }
-  total *= 1 + IMPUESTOS_PCT / 100;
+  const total = yardas * precioYarda * (1 + IMPUESTOS_PCT / 100);
   return Math.round(total * 100) / 100;
 }
 
@@ -3289,8 +3468,8 @@ function totalesConRecargoCredito(datos) {
  * total FINAL con el recargo de crédito, SOLO si hay un único
  * monto calculable. Con las cotizaciones en par (2 mixes sin
  * elegir) no hay un solo monto y sin total (fuera de Dallas,
- * pompa sin precio…) tampoco: la forma va sin pre-llenar,
- * como antes. Null si no aplica.
+ * «Pompa mix 50-50» sin psi base…) tampoco: la forma va sin
+ * pre-llenar, como antes. Null si no aplica.
  */
 function montoFormaTarjeta(datos) {
   const tot = totalesConRecargoCredito(datos);
@@ -3910,6 +4089,25 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // con una pregunta suya.
   const cuandoPedir = !saludoPuro && !faq && !ciudad ? preguntaCuandoPedir(textoCliente) : null;
   const pagoAdelantado = !saludoPuro && !faq ? preguntaPagoAdelantado(textoCliente) : null;
+  // PAGAR DESPUÉS DE LA TIRADA (orden de Jesus, 2026-11-04):
+  // si el cliente pide pagar después de la entrega, no es un
+  // dato del paso ni la pregunta del momento del pago: es la
+  // petición de la forma de información del proyecto (bloque
+  // propio más abajo, tras la regla de domingos). Jamás se
+  // captura como forma de pago ni como otro dato. No lleva la
+  // guarda de faq: «¿Aceptan pago después de la entrega?» cae
+  // en faq_pagos y AUN ASÍ es esta petición — las preguntas
+  // frecuentes normales (tarjeta, efectivo, métodos) no traen
+  // ninguna frase de «pagar después», así que no hay choque.
+  const pidePagarDespues = !saludoPuro ? esPidePagarDespues(textoCliente) : false;
+  // QUE JMP LE CONSIGA LA POMPA (aclaración del dueño,
+  // 2026-11-04): si el cliente pide expresamente que JMP le
+  // consiga/busque/ofrezca la pompa o el servicio de bombeo,
+  // NO es un dato del paso (ni la respuesta a la pregunta de
+  // la pompa, que solo define el mix): es un caso para un
+  // humano (bloque propio más abajo, tras la regla de
+  // domingos). Jamás se captura como dato de pompa.
+  const pidePompaServicio = !saludoPuro ? esPidePompaServicio(textoCliente) : false;
   // ¿VENDEN CONCRETO? (orden del dueño, 2026-11-04): también
   // es PREGUNTA bajo la regla general de arriba — se responde
   // la directa y se retoma el paso (bloque lateral más abajo,
@@ -3955,6 +4153,21 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     detectados = {};
     omitirCaptura = true;
   }
+  // PAGAR DESPUÉS DE LA TIRADA: la petición tampoco se captura
+  // como dato (ni «pago», ni fecha, ni nada): su bloque propio
+  // responde más abajo con la forma y la marca al equipo.
+  if (pidePagarDespues) {
+    detectados = {};
+    omitirCaptura = true;
+  }
+  // QUE JMP LE CONSIGA LA POMPA: la petición tampoco se
+  // captura como dato (no es la respuesta a la pregunta de la
+  // pompa): su bloque propio responde más abajo pasando el
+  // caso a un humano, sin prometer nada.
+  if (pidePompaServicio) {
+    detectados = {};
+    omitirCaptura = true;
+  }
   const { aplicados: nuevos, corregidos } = omitirCaptura
     ? { aplicados: [], corregidos: [] }
     : fusionarDatos(flow, detectados);
@@ -3969,8 +4182,10 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // paso. La BOOM pump NO dispara el cambio: con boom se queda
   // el mix psi pedido. Sin discurso extra: la confirmación de
   // este turno (si el mix se anotó ahora) y el resumen ya lo
-  // traen. El TOTAL no cambia: con servicio de pompa la orden
-  // ya cierra sin total. Pero el PRECIO POR YARDA del concreto
+  // traen. El TOTAL sale del mix ya definido (aclaración del
+  // dueño, 2026-11-04: la pompa no es un servicio, solo
+  // define el mix): con trailer es la base + $5/yd y con boom
+  // el psi tal cual (ver calcularTotalParaMix). Y el PRECIO POR YARDA del concreto
   // sí se conoce y sí se responde: antes de reemplazar el mix
   // se guarda el psi base en mixBase (la corrección de un psi
   // llega como mix psi y esta misma conversión lo actualiza);
@@ -4202,6 +4417,61 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
         };
       }
     }
+  }
+
+  // PAGAR DESPUÉS DE LA TIRADA (orden de Jesus, 2026-11-04):
+  // el cliente pidió pagar después de la entrega. NO se le
+  // anota ninguna forma de pago y la orden NO cierra como
+  // confirmada: se le explica que necesita la forma de
+  // información del proyecto (propiedad, contratista y dueño),
+  // el webhook se la envía como documento y abre la espera
+  // (conv.formaProyecto), y el caso queda marcado para el
+  // equipo (needsHuman), porque la aprobación de esa forma de
+  // pago la decide Jesus. El flujo queda abierto
+  // en el paso en que iba: si el cliente elige después otra
+  // forma de pago normal, su orden sigue su curso.
+  if (pidePagarDespues) {
+    flow.datos.pagoDespues = true;
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+    db.setNeedsHuman(conversacion.id, true);
+    conversacion.needsHuman = true;
+    conversacion.needsHumanAt = new Date().toISOString();
+    return {
+      responder: true,
+      texto: idioma === 'en' ? MENSAJE_PAGO_DESP_EN : MENSAJE_PAGO_DESP_ES,
+      intent: 'pago_despues',
+      topic: 'pagar después de la entrega',
+      intentDetectado,
+      formaProyecto: true,
+      idiomaForma: idioma,
+      sinPrefijoDespertar: true,
+    };
+  }
+
+  // QUE JMP LE CONSIGA LA POMPA (aclaración del dueño,
+  // 2026-11-04): el cliente pidió expresamente que JMP le
+  // consiga/busque la pompa o el servicio de bombeo. Ese
+  // servicio NO existe en JMP (la pompa la pone el cliente;
+  // la pregunta de la pompa en la orden es solo para el mix):
+  // el bot NO lo promete ni lo cotiza — pasa el caso a un
+  // humano (needsHuman) y el flujo queda abierto en el paso
+  // en que iba, por si el cliente sigue con su orden de
+  // concreto.
+  if (pidePompaServicio) {
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+    db.setNeedsHuman(conversacion.id, true);
+    conversacion.needsHuman = true;
+    conversacion.needsHumanAt = new Date().toISOString();
+    return {
+      responder: true,
+      texto: idioma === 'en' ? MENSAJE_POMPA_SERVICIO_EN : MENSAJE_POMPA_SERVICIO_ES,
+      intent: 'pompa_servicio',
+      topic: 'que JMP le consiga una pompa',
+      intentDetectado,
+      sinPrefijoDespertar: true,
+    };
   }
 
   const paso = pasoActual(flow);
@@ -5186,8 +5456,8 @@ function decisionPreguntaInicioMix(orden, idioma) {
  * queda como el «Total con tarjeta de crédito» único (los
  * totales ya traen los taxes del 8.25% incluidos y el +4% de
  * crédito sumado desde el cierre). Sin totales en la orden
- * (fuera de Dallas, pompa sin precio…) la orden queda sin
- * total, como siempre: jamás se inventa uno.
+ * (fuera de Dallas, «Pompa mix 50-50» sin psi base…) la orden
+ * queda sin total, como siempre: jamás se inventa uno.
  */
 function aplicarInicioMixEnConfirmacion(textoArmada, mixElegido) {
   const esc = mixElegido.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -6138,6 +6408,19 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
     ) {
       return manejarDocsTarjeta(conversacion, clase);
     }
+    // FORMA DE INFORMACIÓN DEL PROYECTO EN ESPERA (orden de
+    // Jesus, 2026-11-04): si esta conversación está esperando
+    // la forma del proyecto (el cliente pidió pagar después de
+    // la entrega y ya se le envió), un documento — o la foto de
+    // la forma llenada — es la forma devuelta: se registra la
+    // recepción y el caso queda con el equipo (needsHuman).
+    if (
+      (clase === 'documento' || clase === 'imagen') &&
+      conversacion.formaProyecto &&
+      conversacion.formaProyecto.estado === 'pendiente'
+    ) {
+      return manejarFormaProyecto(conversacion);
+    }
     return responderNoTexto(conversacion, clase);
   }
 
@@ -6375,6 +6658,25 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
     };
   }
 
+  // --- QUE JMP LE CONSIGA LA POMPA, SIN FLUJO (aclaración
+  // del dueño, 2026-11-04): el cliente pide expresamente que
+  // JMP le consiga/busque/ofrezca la pompa o el servicio de
+  // bombeo. Ese servicio NO existe en JMP: no se promete ni
+  // se cotiza — el caso pasa a un humano (needsHuman), igual
+  // que dentro del flujo (ver el bloque en manejarFlujo).
+  if (intent.id !== 'humano' && esPidePompaServicio(textoCliente)) {
+    db.setNeedsHuman(conversacion.id, true);
+    conversacion.needsHuman = true;
+    conversacion.needsHumanAt = new Date().toISOString();
+    return {
+      responder: true,
+      texto: idiomaMsg === 'en' ? MENSAJE_POMPA_SERVICIO_EN : MENSAJE_POMPA_SERVICIO_ES,
+      intent: 'pompa_servicio',
+      topic: 'que JMP le consiga una pompa',
+      sinPrefijoDespertar: true,
+    };
+  }
+
   // --- Respuesta normal por intent (comportamiento de siempre).
   const texto = textoEfectivo(intent.id, conversacion.name, idiomaMsg);
   return { responder: true, texto, intent: intent.id, topic: intent.topic };
@@ -6454,6 +6756,8 @@ module.exports = {
   esPreguntaPrecio,
   esPreguntaPrecioPorYarda,
   esPreguntaVendenConcreto,
+  esPidePagarDespues,
+  esPidePompaServicio,
   lineaPrecioPorYarda,
   preguntaSobreAire,
   recomendacionAire,

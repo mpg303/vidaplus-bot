@@ -288,8 +288,11 @@ function ordenHastaPago(waId, pasosPompa) {
 // (10) TRAILER PUMP → MIX «Trailer pump mix 50-50» (tercera
 // orden del dueño, 2026-11-04): al elegir Small line /
 // Trailer pump, el mix de la orden pasa a ser ese, en el
-// flujo y en el resumen; la orden sigue cerrando SIN total
-// (el servicio de pompa no tiene precio definido).
+// flujo y en el resumen. ACTUALIZADO con la aclaración del
+// dueño del 2026-11-04 («cuando yo vendo cemento no busco
+// pump, solo pregunto para saber el mix que se va a usar»):
+// la pompa NO es un servicio de JMP — solo define el mix —
+// y la orden cierra CON total (base + $5/yd, con taxes).
 // ---------------------------------------------------------------
 {
   const { conv, r } = ordenHastaPago('30000001013', ['Sí', 'Tráiler']);
@@ -301,9 +304,9 @@ function ordenHastaPago(waId, pasosPompa) {
     (r.d.texto || '').includes('• Mix: Trailer pump mix 50-50') &&
     !(r.d.texto || '').includes('5000 psi'), r.d.texto);
   const rr = turno(conv, 'Efectivo');
-  check('TP-3: la confirmación armada trae el mix trailer y la orden cierra SIN total',
+  check('TP-3: la confirmación armada trae el mix trailer y la orden cierra CON total ((180+5)×7×1.0825 = $1,401.84)',
     (rr.d.confirmacionArmada || '').includes('Trailer pump mix 50-50') &&
-    !(rr.d.confirmacionArmada || '').includes('Total:'), rr.d.confirmacionArmada);
+    (rr.d.confirmacionArmada || '').includes('Total: $1,401.84'), rr.d.confirmacionArmada);
 }
 {
   // Captura libre: el trailer pump mencionado en un solo
