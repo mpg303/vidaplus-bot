@@ -683,7 +683,27 @@ function capturarDireccion(raw) {
   dir = dir.replace(/\s+(pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo)\b[\s\S]*$/i, '');
   dir = dir.replace(/\s+a las\s+\d[\s\S]*$/i, '');
   dir = dir.replace(/\s+\d{1,2}(?::\d{2})?\s*(?:a\.?\s?m\.?|p\.?\s?m\.?)[\s\S]*$/i, '');
-  return dir.trim().replace(/[. ]+$/, '');
+  dir = dir.trim().replace(/[. ]+$/, '');
+  // LA COMA NO PUEDE COSTAR EL TOTAL (ronda 2 de pruebas con
+  // clientes ficticios, 2026-11-04 — casos J01–J04 y J07): la
+  // regex de arriba corta en la primera coma, así que el formato
+  // en que escribe la mayoría de los clientes reales («1234 Main
+  // St, Dallas TX») guardaba solo la calle; sin la ciudad,
+  // direccionEsDallas no reconocía Dallas y la orden cerraba SIN
+  // total, contra la regla del dueño «la orden completa CON
+  // precios primero». Se rescata lo que quedó tras la coma: la
+  // ciudad detectada en el resto del mensaje (o en el mensaje
+  // completo si la captura ya no la trae) y el ZIP, y se anexan
+  // a la dirección guardada. Fuera de Dallas sigue sin total:
+  // la ciudad que se anexa es la que el cliente escribió, así
+  // «…, Fort Worth TX» queda Fort Worth y no inventa cifra.
+  const resto = raw.slice((m.index || 0) + m[0].length);
+  let ciudad = detectarCiudad(resto);
+  if (!ciudad && !detectarCiudad(dir)) ciudad = detectarCiudad(raw);
+  if (ciudad && detectarCiudad(dir) !== ciudad) dir = `${dir}, ${ciudad}`;
+  const zip = resto.match(/\b\d{5}(?:-\d{4})?\b/);
+  if (zip && !dir.includes(zip[0])) dir = `${dir} ${zip[0]}`;
+  return dir;
 }
 
 /** ¿Parece una dirección de obra? (número + tipo de vía, o ZIP con número). */
@@ -2821,9 +2841,18 @@ function esPidePompaServicio(texto) {
   }
   // Español: verbo de ofrecer/conseguir con JMP como sujeto
   // (o en imperativo hacia JMP) + la pompa en la misma frase.
+  // Ronda 2 de pruebas (2026-11-04, caso J08): la lista trae
+  // también las formas SUBJUNTIVAS sin el pronombre pegado
+  // (consigan, busquen, traigan, manden, renten, alquilen,
+  // ofrezcan, provean, contraten), porque «necesito que ustedes
+  // me consigan una pompa» es como lo pide la gente real y se
+  // estaba capturando como el DATO del mix en vez de pasar el
+  // caso a un humano. El patrón sigue exigiendo «pompa» en la
+  // misma frase, así que la respuesta-dato «sí ocupo pompa» no
+  // se contamina.
   if (
     new RegExp(
-      `\\b(tienen|tiene|ofrecen|ofrece|ofrecer|cuentan|disponen|manejan|rentan|renta|rentar|alquilan|alquila|venden|vende|vender|consiguen|consigue|conseguir|consigueme|consiganme|buscan|busca|buscar|buscame|busquenme|proveen|provee|proveer|traen|trae|traer|traeme|mandan|manda|mandar|mandame|contratan|contrata|contratar)\\b[^.?!]*\\b${POMPA}\\b`
+      `\\b(tienen|tiene|ofrecen|ofrece|ofrecer|ofrezcan|cuentan|disponen|manejan|rentan|renta|rentar|renten|alquilan|alquila|alquilen|venden|vende|vender|consiguen|consigue|conseguir|consigueme|consiganme|consigan|buscan|busca|buscar|buscame|busquenme|busquen|proveen|provee|proveer|provean|traen|trae|traer|traeme|traigan|mandan|manda|mandar|mandame|manden|contratan|contrata|contratar|contraten)\\b[^.?!]*\\b${POMPA}\\b`
     ).test(t)
   ) {
     return true;
@@ -2848,6 +2877,67 @@ const MENSAJE_POMPA_SERVICIO_ES =
   'Claro, le paso su caso a nuestro equipo para que le atienda sobre la pompa por este mismo chat. 🙏';
 const MENSAJE_POMPA_SERVICIO_EN =
   "Of course, I'll pass your case to our team so they can help you with the pump right here in this chat. 🙏";
+
+/**
+ * EL CLIENTE PIDE EL NÚMERO PERSONAL DE JESUS (ronda 2 de
+ * pruebas, 2026-11-04 — caso J16): jamás se da el (786)
+ * 366-2018; la respuesta es una negativa amable que ofrece SOLO
+ * el WhatsApp del negocio, (469) 746-9639. Hasta hoy esta
+ * pregunta caía en el respaldo genérico «no le entendí» — era
+ * seguro, pero no ayudaba en nada. Guarda: si el mensaje trae
+ * un número largo, es el cliente DANDO su teléfono, no
+ * pidiendo el de Jesus.
+ */
+function esPideNumeroPersonal(texto) {
+  const t = normalizar(texto);
+  if (t.replace(/\D/g, '').length >= 10) return false;
+  const NUM = '(celular|telefono|numero|phone|cell)';
+  if (
+    new RegExp(`\\b${NUM}\\b[^.?!]*\\b(personal|privado|private|de jesus|del dueno|dueno|owner)\\b`).test(t) ||
+    new RegExp(`\\b(personal|privado|private)\\b[^.?!]*\\b${NUM}\\b`).test(t) ||
+    new RegExp(`\\b(jesus|dueno|owner)\\b[^.?!]*\\b${NUM}\\b`).test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+const MENSAJE_NUMERO_PERSONAL_ES =
+  'Disculpe, ese número es personal y no lo compartimos 🙏. ' +
+  `Con gusto le atendemos por el WhatsApp del negocio, ${NEGOCIO.whatsapp}, por este mismo chat.`;
+const MENSAJE_NUMERO_PERSONAL_EN =
+  "I'm sorry, that number is personal and we don't share it 🙏. " +
+  `We're happy to help you on the business WhatsApp, ${NEGOCIO.whatsapp}, right here in this chat.`;
+
+/**
+ * EL CLIENTE PREGUNTA POR UN SERVICIO AJENO AL CONCRETO
+ * (ronda 2 de pruebas, 2026-11-04 — caso J17: «¿También hacen
+ * trabajos de plomería?»): JMP solo vende concreto y su
+ * despacho; no se inventa el servicio ni su precio, y la
+ * respuesta lo dice corto en vez del genérico «no le entendí».
+ * Exige el oficio ajeno + una forma de pregunta/petición, para
+ * no dispararse con una mención suelta (el cliente contando
+ * su propio oficio, por ejemplo). Solo actúa sin flujo y con
+ * intent «otro»: dentro del flujo, una mención así la sigue
+ * tratando el paso en curso como siempre.
+ */
+function esServicioAjeno(texto) {
+  const t = normalizar(texto);
+  const OFICIO =
+    /\b(plomeria|plomero|plomeros|plumbing|plumber|plumbers|fontaneria|fontanero|electricista|electricistas|electrician|electricians|electricidad|roofing|roofer|techos|pintura|pintor|pintores|painting|painter|jardineria|jardinero|landscaping|landscaper|carpinteria|carpintero|carpentry|carpenter|drywall|tablaroca|hvac)\b/;
+  if (!OFICIO.test(t)) return false;
+  return (
+    /\b(hacen|hace|realizan|realiza|ofrecen|ofrece|venden|vende|instalan|instala|arreglan|reparan|trabajos|servicio|servicios|necesito|busco|quiero|ocupo|tambien|do you|do they|does|you do|you offer|also)\b/.test(t) ||
+    /\?/.test(texto || '')
+  );
+}
+
+const MENSAJE_SERVICIO_AJENO_ES =
+  'En *JMP Concrete and Dispatch* nos dedicamos solo al concreto: su venta y despacho 🏗️. ' +
+  'Ese tipo de trabajo no lo hacemos. Si necesita concreto para su obra, con gusto le cotizo.';
+const MENSAJE_SERVICIO_AJENO_EN =
+  'At *JMP Concrete and Dispatch* we handle concrete only: ready-mix sales and dispatch 🏗️. ' +
+  "We don't do that kind of work. If you need concrete for your job, I'll gladly put a quote together.";
 
 // Confirmación cuando el cliente devuelve la forma llena: el
 // caso ya quedó con el equipo (needsHuman) para su revisión.
@@ -6672,6 +6762,34 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
     };
   }
 
+  // --- PIDE EL NÚMERO PERSONAL DE JESUS, SIN FLUJO (ronda 2
+  // de pruebas, 2026-11-04 — caso J16): negativa amable; se
+  // ofrece SOLO el WhatsApp del negocio y jamás el personal.
+  if (intent.id === 'otro' && esPideNumeroPersonal(textoCliente)) {
+    return {
+      responder: true,
+      texto: idiomaMsg === 'en' ? MENSAJE_NUMERO_PERSONAL_EN : MENSAJE_NUMERO_PERSONAL_ES,
+      intent: 'numero_personal',
+      topic: 'el número personal del dueño',
+      sinPrefijoDespertar: true,
+    };
+  }
+
+  // --- PREGUNTA POR UN SERVICIO AJENO AL CONCRETO, SIN FLUJO
+  // (ronda 2 de pruebas, 2026-11-04 — caso J17): respuesta
+  // corta y útil — JMP solo vende concreto y su despacho — en
+  // vez del genérico «no le entendí»; sin inventar el servicio
+  // ni precio alguno.
+  if (intent.id === 'otro' && esServicioAjeno(textoCliente)) {
+    return {
+      responder: true,
+      texto: idiomaMsg === 'en' ? MENSAJE_SERVICIO_AJENO_EN : MENSAJE_SERVICIO_AJENO_ES,
+      intent: 'servicio_ajeno',
+      topic: 'un servicio que no es de concreto',
+      sinPrefijoDespertar: true,
+    };
+  }
+
   // --- QUE JMP LE CONSIGA LA POMPA, SIN FLUJO (aclaración
   // del dueño, 2026-11-04): el cliente pide expresamente que
   // JMP le consiga/busque/ofrezca la pompa o el servicio de
@@ -6736,7 +6854,20 @@ function decidirRespuesta(conversacion, textoCliente, tipoMensaje = 'text') {
   // NUNCA llevan la frase de retomada: tras el cierre el
   // especialista sí está atendiendo la orden y la frase no viene
   // al caso (caso real 2026-10-31).
-  if (d.responder && ctx.desperto && !d.sinPrefijoDespertar) {
+  // Tampoco sale cuando el flujo sigue por DOMINGO ESPECIAL
+  // (ronda 2 de pruebas, 2026-11-04 — caso J15): el aviso de
+  // domingo marca la conversación para el equipo y el siguiente
+  // mensaje del cliente «despierta» la conversación, pero nadie
+  // le estaba debiendo una respuesta — el cliente solo sigue
+  // dando los datos de su orden (la hora, el nombre…) y abrir
+  // con «El especialista no le contestó…» no viene al caso. El
+  // flujo de domingo continúa con su propia redacción.
+  const flujoDomingoEspecial = !!(
+    conversacion.flow &&
+    conversacion.flow.datos &&
+    conversacion.flow.datos.domingoEspecial
+  );
+  if (d.responder && ctx.desperto && !d.sinPrefijoDespertar && !flujoDomingoEspecial) {
     const idioma = ctx.idioma || detectarIdioma(textoCliente);
     d.texto = `${idioma === 'en' ? LINEA_DESPERTAR_EN : LINEA_DESPERTAR_ES}\n${d.texto}`;
   }
@@ -6772,6 +6903,8 @@ module.exports = {
   esPreguntaVendenConcreto,
   esPidePagarDespues,
   esPidePompaServicio,
+  esPideNumeroPersonal,
+  esServicioAjeno,
   lineaPrecioPorYarda,
   preguntaSobreAire,
   recomendacionAire,
