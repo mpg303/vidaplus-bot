@@ -2579,6 +2579,20 @@ function preguntaSobreAire(texto) {
   // forma de pregunta (con «?» o abriendo con el verbo), para
   // no robar respuestas-orden como «necesito el concreto con
   // aire».
+  // ELECCIÓN EXPLÍCITA MANDA (falla real 2026-11-04 19:37): un
+  // volcado de datos que ABRE con «Necesito» y ya trae su
+  // elección de aire dicha («Necesito 100 yds / 3000 psi no
+  // aire / dirección / hora / Slump 5») NO es una consulta
+  // sobre el aire: es la orden con la respuesta puesta. Sin
+  // «?» y con la frase de elección («no aire», «sin aire»,
+  // «con aire», «no air»…), el consejo NO se dispara: se
+  // captura el dato y el flujo avanza. Con «?» («¿lo necesito
+  // con aire o no aire?») sí sigue siendo pregunta.
+  const eleccionAireExplicita =
+    /\b(sin aire|no aire|no lleva aire|con aire|lleva aire|sin entrained air|non[-\s]?air|no air|without air|with air|air[-\s]?entrained)\b/.test(t);
+  if (eleccionAireExplicita && !/\?/.test(texto)) {
+    return null;
+  }
   const esPregunta =
     /\?/.test(texto) ||
     /^(necesita|necesito|necesitara|necesitaria|requiere|does|do|should|will)\b/.test(t);
