@@ -1424,6 +1424,29 @@ function lineaFechaInvalida(info, idioma) {
  */
 function extraerNombreAdelantado(raw) {
   const out = {};
+  // NOMBRE ETIQUETADO (falla real del 2026-11-07, formulario de
+  // la web): «Nombre: Jesus morillo» en su propia línea. La
+  // captura adelantada exigía «soy…» / «mi nombre es…» y el
+  // nombre del formulario se perdía (el bot lo volvía a pedir al
+  // final). La línea etiquetada manda: es un campo del
+  // formulario, no una frase — sin dígitos ni palabras de la
+  // orden, de 1 a 4 palabras.
+  const mNomEtiqueta = raw.match(
+    /(?:^|\n)[ \t]*(?:nombre|name)[ \t]*[:\-][ \t]*([^\n,;]+)/i
+  );
+  if (mNomEtiqueta) {
+    const cand = limpiarNombre(mNomEtiqueta[1]);
+    const toks = cand.split(/\s+/).filter(Boolean);
+    if (
+      cand &&
+      !/\d/.test(cand) &&
+      toks.length >= 1 &&
+      toks.length <= 4 &&
+      !/\b(psi|yardas?|yds?|yards?|concreto|concrete|pompa|bomba|pump)\b/i.test(cand)
+    ) {
+      out.nombre = cand;
+    }
+  }
   const mN = raw.match(
     /(?:^|[,;\n]\s*|\s)(?:soy|mi nombre es|a nombre de|my name is)\s+([^,;\n]+)/i
   );
@@ -1480,7 +1503,12 @@ function extraerNombreCompaniaMultilinea(raw) {
     /\b(psi|libras|slump|yardas?|yds?|precio|precios|aire|pompa|bomba|pump|inspecci[oó]n|inspection|tirar|d[ií]as?|direcci[oó]n|address|pago|pagar|zelle)\b/i;
   for (const lineaCruda of raw.split(/[\n;]/)) {
     const linea = lineaCruda.trim();
-    if (!linea || /\d/.test(linea) || RE_DATOS.test(linea) || esSaludoPuro(linea)) continue;
+    // Una línea que ABRE con saludo es una frase («Hola JMP
+    // Concrete & Dispatch, necesito una entrega…»), jamás el
+    // nombre ni la compañía sueltos: sin esta guarda, la palabra
+    // «Concrete» del saludo del formulario web dejaba la frase
+    // ENTERA anotada como la compañía (falla real del 2026-11-07).
+    if (!linea || /\d/.test(linea) || RE_DATOS.test(linea) || esSaludoPuro(linea) || empiezaConSaludo(linea)) continue;
     if (!out.compania && RE_GIRO.test(linea)) {
       out.compania = limpiarNombre(linea);
       continue;
@@ -1531,13 +1559,32 @@ function extraerDatos(texto, paso) {
     sesenta: 60, setenta: 70, ochenta: 80, noventa: 90, cien: 100, ciento: 100,
   };
   const fmtYds = (n) => (Number.isInteger(n) ? String(n) : String(n));
+  // YARDAS ETIQUETADAS (falla real del 2026-11-07, formulario de
+  // la web): el formulario de órdenes del sitio manda el dato al
+  // revés de la conversación — «Yardas necesarias: 10» — con la
+  // etiqueta ANTES y el número después de los dos puntos. Todos
+  // los patrones históricos buscan el número ANTES de la palabra
+  // («10 yardas») y este formato se perdía entero: el bot volvió
+  // a preguntar «¿Cuántas yardas necesita?» con el dato a la
+  // vista. La etiqueta manda y se captura PRIMERO, anclada al
+  // inicio de una línea (así la escriben los formularios), con o
+  // sin la palabra de relleno («necesarias», «needed»…).
+  const mYdsEtiqueta = raw.match(
+    /(?:^|\n)[ \t]*(?:cantidad[ \t]+de[ \t]+)?(?:yardas?|yards?|yds?)(?:[ \t]+(?:necesarias?|requeridas?|solicitadas?|needed|required))?[ \t]*[:=][ \t]*(\d+(?:[.,]\d+)?)/i
+  );
+  if (mYdsEtiqueta) {
+    d.yardas = {
+      cantidad: mYdsEtiqueta[1].replace(',', '.'),
+      plus: /\bplus\b/i.test(raw) || raw.includes('+'),
+    };
+  }
   const mRangoYds =
-    raw.match(/(\d+(?:[.,]\d+)?)\s*(?:-|a)\s*(\d+(?:[.,]\d+)?)\s*(?:yds?|yards?|yardas?)\b/i) ||
-    raw.match(/entre\s+(\d+(?:[.,]\d+)?)\s+y\s+(\d+(?:[.,]\d+)?)\s*(?:yds?|yards?|yardas?)\b/i);
+    raw.match(/(\d+(?:[.,]\d+)?)[ \t]*(?:-|a)[ \t]*(\d+(?:[.,]\d+)?)[ \t]*(?:yds?|yards?|yardas?)\b/i) ||
+    raw.match(/entre\s+(\d+(?:[.,]\d+)?)\s+y\s+(\d+(?:[.,]\d+)?)[ \t]*(?:yds?|yards?|yardas?)\b/i);
   const mRangoYdsPalabras = !mRangoYds
-    ? raw.match(/\b(diez|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento)\s+a\s+(diez|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento)\s+(?:yardas?|yds?|yards?)\b/i)
+    ? raw.match(/\b(diez|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento)\s+a\s+(diez|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento)[ \t]+(?:yardas?|yds?|yards?)\b/i)
     : null;
-  if (mRangoYds || mRangoYdsPalabras) {
+  if (!d.yardas && (mRangoYds || mRangoYdsPalabras)) {
     const v1 = mRangoYds
       ? parseFloat(mRangoYds[1].replace(',', '.'))
       : NUMEROS_PALABRA_YDS[mRangoYdsPalabras[1].toLowerCase()];
@@ -1551,7 +1598,14 @@ function extraerDatos(texto, paso) {
       d.rangoYardas = { bajo: fmtYds(bajo), alto: fmtYds(alto) };
     }
   }
-  const mYds = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:yds?|yards?|yardas?)\b/i);
+  // OJO: el hueco entre el número y la unidad es [ \t], JAMÁS
+  // \s — con \s el patrón cruzaba el salto de línea y robaba el
+  // último número de la línea anterior: en el mensaje del
+  // formulario web, el ZIP «75228» (fin de la línea de la
+  // dirección) quedaba anotado como las yardas porque la línea
+  // siguiente empezaba con «Yardas…» (falla real del 2026-11-07;
+  // la misma clase de defecto ya corregida en el slump).
+  const mYds = raw.match(/(\d+(?:[.,]\d+)?)[ \t]*(?:yds?|yards?|yardas?)\b/i);
   if (!d.yardas && mYds) {
     d.yardas = {
       cantidad: mYds[1].replace(',', '.'),
@@ -1750,11 +1804,35 @@ function extraerDatos(texto, paso) {
     // (antes quedaba fecha = «50/50» cuando el cliente pedía la
     // pompa mix en un volcado de datos).
     .replace(/\b50\s*\/\s*50\b/g, ' ');
-  const mFecha =
-    textoFecha.match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/) ||
-    textoFecha.match(/\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i) ||
-    textoFecha.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i);
-  if (mFecha) {
+  // FECHA DE MÁQUINA (falla real del 2026-11-07, formulario de
+  // la web): el formulario escribe el día en ISO «2026-11-09» y
+  // ningún patrón histórico lo reconocía (solo «11/9/2026», «9 de
+  // noviembre» o relativas): la fecha se perdía y el bot la
+  // volvía a preguntar. Se aceptan el ISO (año-mes-día) y el
+  // numérico con guiones (mes-día-año), se validan contra el
+  // calendario como cualquier fecha explícita y se guardan en el
+  // formato M/D/AAAA que el resto del flujo ya sabe resolver
+  // (día de la semana, domingo, fecha corta de la confirmación).
+  let fechaMaquina = null;
+  const mFechaISO = textoFecha.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  const mFechaGuion = !mFechaISO
+    ? textoFecha.match(/\b(\d{1,2})-(\d{1,2})-(\d{4})\b/)
+    : null;
+  if (mFechaISO) {
+    fechaMaquina = { anio: +mFechaISO[1], mes: +mFechaISO[2], dia: +mFechaISO[3] };
+  } else if (mFechaGuion) {
+    fechaMaquina = { mes: +mFechaGuion[1], dia: +mFechaGuion[2], anio: +mFechaGuion[3] };
+  }
+  const mFecha = fechaMaquina
+    ? null
+    : textoFecha.match(/\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/) ||
+      textoFecha.match(/\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i) ||
+      textoFecha.match(/pasado\s+mañana|mañana|hoy|lunes|martes|miércoles|jueves|viernes|sábado|domingo|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday/i);
+  if (fechaMaquina) {
+    const invMaquina = validarFechaNumerica(fechaMaquina.mes, fechaMaquina.dia, fechaMaquina.anio);
+    if (invMaquina) d.fechaInvalida = invMaquina;
+    else d.fecha = `${fechaMaquina.mes}/${fechaMaquina.dia}/${fechaMaquina.anio}`;
+  } else if (mFecha) {
     // RONDA 28 (defecto en vivo del dueño, 2026-11-02): la
     // fecha explícita se VALIDA contra el calendario real ANTES
     // de guardarla — «32 de diciembre» se anotaba tal cual
@@ -4219,9 +4297,22 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const venden = !saludoPuro && !faq && !ciudad ? esPreguntaVendenConcreto(textoCliente) : false;
 
   let detectados = {};
-  let omitirCaptura = saludoPuro || !!faq || !!ciudad;
+  let omitirCaptura = saludoPuro || !!faq;
   if (!omitirCaptura) {
-    detectados = extraerDatos(textoCliente, pasoPedido);
+    // COBERTURA CON DATOS (falla real del 2026-11-07, formulario
+    // de la web): un mensaje puede PARECER pregunta de cobertura
+    // — trae «entrega» y la ciudad de su propia dirección — y a
+    // la vez venir con la orden completa ya dada. Antes, la sola
+    // sospecha de cobertura omitía la captura ENTERA y el bot
+    // volvía a preguntar datos que el cliente ya había dado
+    // (las yardas del formulario). Ahora, con ciudad detectada,
+    // la captura corre SIN paso (paso null): solo valen los
+    // formatos cerrados — número con «yardas» o su etiqueta,
+    // dirección con sufijo o etiqueta, fecha con formato, nombre
+    // con marcador — y el texto libre de la pregunta jamás se
+    // guarda como dato, igual que antes. La línea de cobertura
+    // se sigue respondiendo (más abajo) junto con lo capturado.
+    detectados = extraerDatos(textoCliente, ciudad ? null : pasoPedido);
     if (noSabe && !detectados.medidas) {
       // «No sé cuántas yardas» sin medidas: no es un dato; la
       // respuesta ofrece el cálculo por medidas.
@@ -6643,6 +6734,26 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
   if (ciudad) {
     conversacion.flow = flujoNuevo('cotizacion', textoCliente);
     db.setConversationFlow(conversacion.id, conversacion.flow);
+    // VOLCADO QUE SUENA A COBERTURA (falla real del 2026-11-07,
+    // formulario de la web): el mensaje del formulario — «Hola
+    // JMP Concrete & Dispatch, necesito una entrega de concreto.
+    // Nombre: … Dirección: … Dallas … Yardas necesarias: 10
+    // Fecha de entrega: 2026-11-09» — disparaba esta rama por la
+    // palabra «entrega» y la ciudad de la dirección, y la rama
+    // respondía la ciudad y preguntaba las yardas SIN mirar ni
+    // un dato de los que ya venían. Si el mensaje trae datos
+    // duros ya dados (captura sin paso: solo formatos cerrados),
+    // se entra al flujo normal, que los anota, confirma la
+    // ciudad y pregunta SOLO el primer dato que falte. Sin
+    // datos, la respuesta de cobertura de siempre, intacta.
+    const volcado = extraerDatos(textoCliente, null);
+    if (
+      ['yardas', 'mix', 'direccion', 'fecha', 'hora', 'nombre', 'compania', 'pago'].some(
+        (k) => volcado[k]
+      )
+    ) {
+      return manejarFlujo(conversacion, textoCliente, true, intent.id);
+    }
     return {
       responder: true,
       texto:
