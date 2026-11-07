@@ -24,6 +24,10 @@
 //  6. La línea del saludo («Hola JMP Concrete & Dispatch…»)
 //     quedaba anotada como la COMPAÑÍA por la palabra «Concrete»:
 //     una línea que abre con saludo es una frase, no un nombre.
+//  7. (2026-11-07, sección propia de PSI en el sitio) La línea
+//     etiquetada «PSI: 4000» no la rescataba ningún patrón y el
+//     hueco \s* robaba el número de la línea anterior como psi:
+//     la etiqueta manda (anclada a línea) y el hueco es [ \t].
 // Regla que queda: un dato ya dado en el mensaje — etiquetado o
 // suelto, en cualquier orden — NUNCA se vuelve a preguntar; la
 // siguiente pregunta es solo el primer dato que falte.
@@ -205,7 +209,69 @@ Delivery date: 2026-11-10`;
     JSON.stringify(conv.flow && conv.flow.datos));
 }
 
-// ---------- 6. Cobertura + datos sueltos en el mismo mensaje ----------
+// ---------- 7. El formulario CON su sección de PSI (2026-11-07) ----------
+// El sitio agregó la sección propia «Resistencia del concreto
+// (PSI)»: el mensaje trae la línea etiquetada «PSI: 4000» entre
+// las yardas y la fecha. Antes NINGÚN patrón la rescataba (todos
+// buscan «4000 psi», número antes que la palabra) y, peor, el
+// hueco \s* del patrón «número + psi» cruzaba el salto de línea
+// y robaba el número del final de la línea anterior: «Yardas
+// necesarias: 100\nPSI: 4000» marcaba «100» como psi inválido
+// y las yardas se perdían. Ahora la etiqueta manda (anclada a
+// línea) y el hueco es [ \t], como en yardas y en el slump.
+{
+  let conv = db.upsertConversation('12145550177', 'Jesus morillo');
+  const msg = `Hola JMP Concrete & Dispatch, necesito una entrega de concreto.
+Nombre: Jesus morillo
+Teléfono: 7863662018
+Dirección: 3113 santa Anna ave dallas tx 75228
+Yardas necesarias: 10
+PSI: 4000
+Fecha de entrega: 2026-11-25`;
+  const r = turno(conv, msg);
+  conv = r.conv;
+  const datos = conv.flow.datos;
+  check('formulario+PSI: el mix etiquetado se anota (4000 psi)',
+    datos.mix === '4000 psi', datos.mix);
+  check('formulario+PSI: NO vuelve a preguntar la resistencia',
+    !(r.d.texto || '').includes('mix o resistencia (PSI)'), r.d.texto);
+  check('formulario+PSI: las yardas quedan intactas (10, no psi inválido)',
+    datos.yardas && datos.yardas.cantidad === '10', JSON.stringify(datos.yardas));
+  check('formulario+PSI: sigue con el aire (lo único del mix que falta)',
+    (r.d.texto || '').includes('¿Y el concreto va con aire o no aire?'), r.d.texto);
+  let r2 = turno(conv, 'Sin pompa, sin aire'); conv = r2.conv;
+  check('formulario+PSI: sigue a la hora', (r2.d.texto || '').includes('¿A qué hora lo necesita'),
+    r2.d.texto);
+  let r3 = turno(conv, '7 am'); conv = r3.conv;
+  let r4 = turno(conv, 'No tengo'); conv = r4.conv;
+  check('formulario+PSI: la orden cierra con el total del 4000 ($1,840.25)',
+    (r4.d.texto || '').includes('Total: $1,840.25'), r4.d.texto);
+  let r5 = turno(conv, 'Zelle'); conv = r5.conv;
+  check('formulario+PSI: confirmación interna con el mix 4000 psi',
+    !!r5.d.confirmacionArmada && (r5.d.confirmacionArmada || '').includes('4000 psi'),
+    r5.d.confirmacionArmada || r5.d.texto);
+
+  // Unidades de la etiqueta PSI
+  const u1 = bot.extraerDatos('Yardas necesarias: 100\nPSI: 4000', null);
+  check('unidad PSI: la línea anterior NO se roba como psi (mix 4000, yardas 100)',
+    u1.mix === '4000 psi' && u1.yardas && u1.yardas.cantidad === '100' && !u1.psiInvalido,
+    JSON.stringify(u1));
+  const u2 = bot.extraerDatos('Dirección: 3113 santa Anna ave dallas tx 75228\nPSI: 3500', null);
+  check('unidad PSI: el ZIP no se roba como psi (mix 3500)',
+    u2.mix === '3500 psi' && !u2.psiInvalido, JSON.stringify(u2));
+  const u3 = bot.extraerDatos('Yardas necesarias: 10\nPSI: 2500', null);
+  check('unidad PSI: un PSI etiquetado que no existe se marca inválido (2500)',
+    !u3.mix && u3.psiInvalido === '2500' && u3.yardas && u3.yardas.cantidad === '10',
+    JSON.stringify(u3));
+  const u4 = bot.extraerDatos('Yardas necesarias: 10\nPSI: No lo sé', null);
+  check('unidad PSI: «No lo sé» no anota mix ni marca inválido (se pregunta)',
+    !u4.mix && !u4.psiInvalido, JSON.stringify(u4));
+  const u5 = bot.extraerDatos('Resistencia: 4500', null);
+  check('unidad PSI: la etiqueta «Resistencia:» también se rescata (4500 psi)',
+    u5.mix === '4500 psi', JSON.stringify(u5));
+}
+
+// ---------- 8. Cobertura + datos sueltos en el mismo mensaje ----------
 {
   let conv = db.upsertConversation('16825550101', 'Cobertura Datos');
   const r = turno(conv, '¿Llegan a Dallas? Necesito 10 yardas');

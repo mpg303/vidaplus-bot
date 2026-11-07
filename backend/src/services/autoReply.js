@@ -1999,23 +1999,56 @@ function extraerDatos(texto, paso) {
   // disponible SOLO sale cuando el cliente pide UN ÚNICO
   // mix que no existe — y los válidos se guardan como
   // COTIZACIONES (el par, más abajo): no hay que elegir uno.
+  // OJO: el hueco entre el número y «psi/libras» es [ \t],
+  // JAMÁS \s (corrección 2026-11-07): con \s* el patrón cruzaba
+  // el salto de línea y robaba el número del final de la línea
+  // ANTERIOR — en el mensaje del formulario web, «Yardas
+  // necesarias: 100\nPSI: 4000» marcaba «100» como el psi (y
+  // encima inválido) y las yardas se perdían; con el ZIP de la
+  // dirección pasaba igual («…75228\nPSI: 4000» → psi 75228).
+  // Es la misma clase de defecto ya corregida en yardas y slump.
   const mencionesPsi = [
-    ...raw.matchAll(/(\d{1,3}(?:,\d{3})+|\d{3,5})\s*(?:psi|libras)\b/gi),
+    ...raw.matchAll(/(\d{1,3}(?:,\d{3})+|\d{3,5})[ \t]*(?:psi|libras)\b/gi),
   ].map((m) => parseInt(m[1].replace(/,/g, ''), 10));
   const variosMixes = new Set(mencionesPsi).size > 1;
   const mPsi =
-    raw.match(/(\d{1,3}(?:,\d{3})+|\d{3,5})\s*(?:psi|libras)\b/i) ||
+    raw.match(/(\d{1,3}(?:,\d{3})+|\d{3,5})[ \t]*(?:psi|libras)\b/i) ||
     raw.match(new RegExp(`\\bde\\s+(${NUMS_MIX})\\b`, 'i')) ||
     raw.match(new RegExp(`\\b(${NUMS_MIX})\\s+(?:con|sin)\\s+aire\\b`, 'i')) ||
     raw.match(new RegExp(`\\b(?:mix|mezcla)\\s*(?:de\\s*)?(${NUMS_MIX})\\b`, 'i')) ||
     (!esDireccion ? raw.match(new RegExp(`\\b(${NUMS_MIX})\\b`)) : null);
+  // PSI ETIQUETADO (formulario de la web, 2026-11-07): el
+  // formulario manda la resistencia al revés de la conversación
+  // — «PSI: 4000» — con la etiqueta ANTES y el número después de
+  // los dos puntos, en su PROPIA SECCIÓN (antes la resistencia
+  // solo podía ir escrita en las notas). Ningún patrón histórico
+  // la rescataba: todos buscan el número ANTES de la palabra
+  // («4000 psi»). La etiqueta manda y se captura PRIMERO,
+  // anclada al inicio de una línea (así la escriben los
+  // formularios). «PSI: No lo sé» no trae número: no captura
+  // nada y el flujo pregunta el mix como debe ser.
+  const mPsiEtiqueta = raw.match(
+    /(?:^|\n)[ \t]*(?:psi|resistencia(?:[ \t]+del[ \t]+concreto)?)[ \t]*[:=][ \t]*(\d{1,3}(?:,\d{3})+|\d{3,5})/i
+  );
   // POMPA MIX 50-50: mix válido para pompas de arrastre (regla
   // del dueño, 2026-10-30). Si el mensaje parece una dirección,
   // el «5050» suelto puede ser el número de la calle: en ese
   // caso solo cuenta si el cliente menciona la pompa.
   const pompa =
     detectarPompaMix(raw) && (!esDireccion || /\bpompa\b/.test(normalizar(raw)));
-  if (pompa) {
+  if (mPsiEtiqueta) {
+    // La etiqueta del formulario manda sobre cualquier otra
+    // captura del mix de este mensaje: es un campo cerrado del
+    // formulario, no una frase. Se valida contra la MISMA lista
+    // de los seis mixes que existen: un PSI etiquetado fuera de
+    // la lista se marca inválido, como cualquier otro.
+    const nPsiEt = parseInt(mPsiEtiqueta[1].replace(/,/g, ''), 10);
+    if (MIXES_PSI.has(nPsiEt)) {
+      d.mix = `${nPsiEt} psi`;
+    } else {
+      d.psiInvalido = String(nPsiEt);
+    }
+  } else if (pompa) {
     d.mix = 'Pompa mix 50-50';
   } else if (producto) {
     d.mix = producto;
