@@ -5060,10 +5060,11 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   if (paso && soloDelivery) {
     // ¿SOLO DELIVERY? A MITAD DEL FLUJO (corrección
     // 2026-11-12, caso Alejandro Maita): pregunta lateral —
-    // se responde con la política EXACTA del dueño (NO es un
-    // «sí» pelado: JMP prefiere VENDER el concreto y
-    // entregarlo, porque así se hace responsable de la
-    // calidad) y se retoma el paso en el que íbamos; el
+    // se responde con la política EXACTA del dueño (sí se
+    // puede hacer solo el delivery, con costo aparte según
+    // la dirección; y si el concreto lo compra con JMP,
+    // JMP responde por la calidad) y se retoma el paso en
+    // el que íbamos; el
     // flujo NO se toca. La frase no trae pregunta propia,
     // así que el paso se vuelve a preguntar SIEMPRE al
     // final (también en el de yardas).
@@ -6610,11 +6611,12 @@ function esPreguntaGarantia(texto) {
  * ¿SOLO DELIVERY? (corrección 2026-11-12, caso Alejandro
  * Maita: preguntó dos veces «Si solo quiero el delivery
  * ustedes me lo hacen?» y el bot no entendió ninguna). La
- * política del dueño (dictada el 2026-11-12 16:13) NO es un
- * «sí» pelado: JMP prefiere VENDERLE el concreto al cliente
- * (y entregárselo), porque así JMP se hace responsable de
- * la calidad del concreto — no es un servicio de transporte
- * de concreto comprado a otro. La frase se responde tal
+ * política final del dueño (precisión 2026-11-12 16:26):
+ * SÍ se puede hacer solo el delivery aunque el cliente
+ * tenga su concreto por otro lado, y ese servicio tiene
+ * un COSTO APARTE según la dirección de entrega; si el
+ * concreto lo compra con JMP, JMP responde por la
+ * calidad. La frase se responde tal
  * cual y la cotización sigue su curso (el delivery ES el
  * servicio de JMP: vender el concreto entregado). El
  * detector es estrecho: exige «solo/nomás/only/just» pegado
@@ -6625,9 +6627,9 @@ function esPreguntaGarantia(texto) {
  * es parte del flujo, no esta pregunta.
  */
 const RESPUESTA_SOLO_DELIVERY_ES =
-  'Preferiblemente le vendemos el concreto nosotros y se lo entregamos en su obra, así nos hacemos responsables de la calidad del concreto.';
+  'Sí, claro: también le podemos hacer solo el delivery y entregarle el concreto en su obra. El delivery tiene un costo aparte, que depende de la dirección de entrega. Eso sí, si el concreto lo compra con nosotros, respondemos por su calidad.';
 const RESPUESTA_SOLO_DELIVERY_EN =
-  'Preferably, we sell you the concrete ourselves and deliver it to your job site, so we take responsibility for the quality of the concrete.';
+  'Yes, of course: we can also do delivery only and bring the concrete to your job site. Delivery has a separate cost, which depends on the delivery address. That said, if you buy the concrete from us, we stand behind its quality.';
 
 function esPreguntaSoloDelivery(texto) {
   const t = ` ${normalizar(texto)} `;

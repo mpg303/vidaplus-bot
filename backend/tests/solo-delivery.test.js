@@ -1,13 +1,14 @@
 // ============================================================
-// CORRECCIÓN 2026-11-12 (caso real Alejandro Maita, política
-// dictada por el dueño 2026-11-12 16:13): el cliente preguntó
-// dos veces «Si solo quiero el delivery ustedes me lo
-// hacen?» y el bot no entendió ninguna. Arreglo: detector
+// CORRECCIÓN 2026-11-12 (caso real Alejandro Maita; política
+// final del dueño con precisión de las 16:26): el cliente
+// preguntó dos veces «Si solo quiero el delivery ustedes me
+// lo hacen?» y el bot no entendió ninguna. Arreglo: detector
 // nuevo de SOLO DELIVERY / SOLO ENTREGA que responde con la
-// política del dueño — NO un «sí» pelado: JMP prefiere
-// VENDERLE el concreto al cliente y entregárselo, porque así
-// se hace responsable de la calidad del concreto (no es un
-// servicio de transporte de concreto comprado a otro). Sin
+// política final — SÍ se puede hacer solo el delivery aunque
+// el cliente tenga su concreto por otro lado, y ese
+// servicio tiene un COSTO APARTE según la dirección de
+// entrega; si el concreto lo compra con JMP, JMP responde
+// por la calidad. Sin
 // flujo la respuesta abre la cotización en las yardas; a
 // mitad del flujo responde y retoma el paso, sin capturar la
 // pregunta como dato. Trampas: dar la dirección de entrega,
@@ -52,19 +53,22 @@ function turno(conv, texto) {
 }
 
 const FRASE =
-  'Preferiblemente le vendemos el concreto nosotros y se lo entregamos en su obra, así nos hacemos responsables de la calidad del concreto.';
+  'Sí, claro: también le podemos hacer solo el delivery y entregarle el concreto en su obra. El delivery tiene un costo aparte, que depende de la dirección de entrega. Eso sí, si el concreto lo compra con nosotros, respondemos por su calidad.';
 const FRASE_EN =
-  'Preferably, we sell you the concrete ourselves and deliver it to your job site, so we take responsibility for the quality of the concrete.';
+  'Yes, of course: we can also do delivery only and bring the concrete to your job site. Delivery has a separate cost, which depends on the delivery address. That said, if you buy the concrete from us, we stand behind its quality.';
 const PREG_YARDAS = '¿Cuántas yardas necesita?';
 
-// La política dictada (2026-11-12 16:13) manda en la propia
-// frase: JMP vende el concreto y se hace responsable de la
-// calidad — jamás un «sí» pelado a transportar el concreto
-// de otro.
-check('frase: abre con la preferencia del dueño', FRASE.startsWith('Preferiblemente le vendemos el concreto nosotros'));
-check('frase: JMP se hace responsable de la calidad',
-  /nos hacemos responsables de la calidad del concreto/.test(FRASE));
-check('frase: NO es el «sí» pelado descartado', !/^Sí, claro/.test(FRASE));
+// La política final (precisión del dueño 2026-11-12 16:26)
+// manda en la propia frase: SÍ se hace solo el delivery,
+// con costo aparte según la dirección; y si el concreto
+// lo compra con JMP, JMP responde por su calidad.
+check('frase: abre confirmando que sí se hace solo el delivery',
+  FRASE.startsWith('Sí, claro: también le podemos hacer solo el delivery'));
+check('frase: el delivery tiene costo aparte', /costo aparte/.test(FRASE));
+check('frase: JMP responde por la calidad si el concreto es de JMP',
+  /respondemos por su calidad/.test(FRASE));
+check('frase: NO dice que solo venden el concreto ellos',
+  !/Preferiblemente le vendemos/.test(FRASE));
 
 // ---------- Unidades: detector de solo delivery ----------
 {
