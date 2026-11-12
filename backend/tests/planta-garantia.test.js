@@ -6,13 +6,19 @@
 // traen el cemento?» y el bot respondió «no le entendí» a
 // TODO. Arreglo: dos detectores nuevos (planta de origen y
 // garantía/calidad) que responden con la frase del dueño —
-// la garantía que él definió es esa: el concreto se lleva
-// de la planta más cercana a la localización del cliente y
-// se lo ENTREGA JMP. Redacción corregida por el dueño
-// (2026-11-12 16:06): «entregado por nosotros», NUNCA
-// «despachado por la planta». Sin flujo la respuesta abre
-// la cotización en las yardas; a mitad del flujo responde
-// y retoma el paso, sin capturar la pregunta como dato.
+// el concreto sale de la planta más cercana a la
+// localización del cliente y se lo ENTREGA JMP. Redacción
+// corregida por el dueño (2026-11-12 16:06): «entregado
+// por nosotros», NUNCA «despachado por la planta». Sin
+// flujo la respuesta abre la cotización en las yardas; a
+// mitad del flujo responde y retoma el paso, sin capturar
+// la pregunta como dato.
+// ACTUALIZACIÓN 2026-11-12: la GARANTÍA pasa a la versión
+// profesional aprobada por el dueño (le gustó la redacción
+// larga — mix y PSI exactos pedidos, ticket de planta que
+// lo respalda, revisión inmediata si no corresponde — con
+// su ajuste de «entregado por nosotros» y la planta más
+// cercana); la PLANTA DE ORIGEN conserva su frase corta.
 // Correr: node tests/planta-garantia.test.js
 // ============================================================
 const fs = require('fs');
@@ -51,21 +57,37 @@ function turno(conv, texto) {
   return { d, conv: db.getConversation(conv.id) || conv };
 }
 
-const FRASE =
-  'Claro que si tienen garantia nuestros trabajos. El concreto se lo entregamos nosotros desde la planta más cercana a su localización, así le aseguramos que llegue perfecto.';
-const FRASE_EN =
+const FRASE_PLANTA =
+  'El concreto se lo entregamos nosotros desde la planta más cercana a su localización, así le aseguramos que llegue perfecto.';
+const FRASE_PLANTA_EN =
   'We deliver the concrete ourselves from the plant closest to your location, so we make sure it arrives perfect.';
+const FRASE_GARANTIA =
+  'Claro que sí, le garantizamos la calidad. El concreto que usted ordena se lo entregamos nosotros, desde la planta más cercana a su localización, para que le llegue en perfectas condiciones, con el mix y la resistencia (PSI) exactos que pidió, y su ticket de planta lo respalda. Si el concreto entregado no correspondiera a lo ordenado, lo revisamos de inmediato y respondemos por ello.';
+const FRASE_GARANTIA_EN =
+  'Yes, of course, we guarantee the quality. The concrete you order is delivered by us, from the plant closest to your location, so it arrives in perfect condition, with the exact mix and strength (PSI) you asked for, and your plant ticket backs it up. If the concrete delivered did not match what you ordered, we review it right away and stand behind it.';
 const PREG_YARDAS = '¿Cuántas yardas necesita?';
 
-// La redacción corregida (2026-11-12 16:06) manda en la
-// propia frase: «entregado por nosotros» y jamás la
-// entrega presentada como despacho de la planta.
-check('frase: dice que lo entregamos nosotros', /entregamos nosotros/.test(FRASE));
-check('frase: NUNCA «despachado por la planta»', !/despachado por la planta/i.test(FRASE));
-check('frase: sin la redundancia «se lo llevamos» (corrección 16:09)',
-  !/se lo llevamos/i.test(FRASE));
-check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
-  FRASE.startsWith('Claro que si tienen garantia nuestros trabajos.'));
+// La redacción manda en las propias frases: «entregado por
+// nosotros» y jamás la entrega presentada como despacho de
+// la planta (corrección del dueño 2026-11-12 16:06), sin la
+// redundancia «se lo llevamos» (corrección 16:09).
+check('frase planta: dice que lo entregamos nosotros', /entregamos nosotros/.test(FRASE_PLANTA));
+check('frase planta: NUNCA «despachado por la planta»', !/despachado por la planta/i.test(FRASE_PLANTA));
+check('frase planta: sin la redundancia «se lo llevamos» (corrección 16:09)',
+  !/se lo llevamos/i.test(FRASE_PLANTA));
+// La garantía profesional aprobada por el dueño: abre con
+// la garantía, trae la planta más cercana, el mix/PSI
+// pedidos y el ticket de planta que lo respalda.
+check('frase garantía: abre garantizando la calidad',
+  FRASE_GARANTIA.startsWith('Claro que sí, le garantizamos la calidad.'));
+check('frase garantía: dice «entregamos nosotros»', /entregamos nosotros/.test(FRASE_GARANTIA));
+check('frase garantía: trae la «planta más cercana»', /planta más cercana/.test(FRASE_GARANTIA));
+check('frase garantía: trae el «ticket de planta»', /ticket de planta/.test(FRASE_GARANTIA));
+check('frase garantía: trae el respaldo si no corresponde',
+  /no correspondiera a lo ordenado, lo revisamos de inmediato/.test(FRASE_GARANTIA));
+check('frase garantía: NUNCA «despachado por la planta»', !/despachado por la planta/i.test(FRASE_GARANTIA));
+check('frase garantía: sin la redundancia «se lo llevamos» (corrección 16:09)',
+  !/se lo llevamos/i.test(FRASE_GARANTIA));
 
 // ---------- Unidades: detector de planta de origen ----------
 {
@@ -135,8 +157,8 @@ check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
 {
   const conv = db.upsertConversation('15553330001', 'Alejandro');
   const r = turno(conv, 'Ustedes me dan garantía por su cemento?');
-  check('garantía sin flujo: responde la frase EXACTA del dueño',
-    (r.d.texto || '').includes(FRASE), r.d.texto);
+  check('garantía sin flujo: responde la frase profesional EXACTA aprobada',
+    (r.d.texto || '').includes(FRASE_GARANTIA), r.d.texto);
   check('garantía sin flujo: nada de «no entendí»',
     !/no (le )?entend/i.test(r.d.texto || ''), r.d.texto);
   check('garantía sin flujo: sale con intent «garantia»',
@@ -154,7 +176,7 @@ check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
   const conv = db.upsertConversation('15553330002', 'Alejandro Planta');
   const r = turno(conv, 'De qué planta traen el cemento?');
   check('planta sin flujo: responde la frase EXACTA del dueño',
-    (r.d.texto || '').includes(FRASE), r.d.texto);
+    (r.d.texto || '').includes(FRASE_PLANTA), r.d.texto);
   check('planta sin flujo: nada de «no entendí»',
     !/no (le )?entend/i.test(r.d.texto || ''), r.d.texto);
   check('planta sin flujo: sale con intent «planta_origen»',
@@ -162,7 +184,7 @@ check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
   const conv2 = db.upsertConversation('15553330003', 'Alejandro Planta 2');
   const r2 = turno(conv2, 'Desde que planta traen el cemento?');
   check('planta sin flujo (desde): responde la frase EXACTA del dueño',
-    (r2.d.texto || '').includes(FRASE), r2.d.texto);
+    (r2.d.texto || '').includes(FRASE_PLANTA), r2.d.texto);
 }
 
 // ---------- Planta A MITAD del flujo (paso del mix) ----------
@@ -175,7 +197,7 @@ check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
     JSON.stringify(r.conv.flow.datos));
   r = turno(r.conv, '¿De qué planta traen el cemento?');
   check('planta en flujo: responde la frase EXACTA del dueño',
-    (r.d.texto || '').includes(FRASE), r.d.texto);
+    (r.d.texto || '').includes(FRASE_PLANTA), r.d.texto);
   check('planta en flujo: la pregunta NO quedó como mix',
     !r.conv.flow.datos.mix, JSON.stringify(r.conv.flow.datos));
   check('planta en flujo: retoma el paso del mix',
@@ -201,8 +223,8 @@ check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
   // Tras el mix el flujo queda en la pregunta del aire: la
   // pregunta de garantía se responde y esa pregunta se retoma.
   r = turno(r.conv, '¿Y la calidad la garantizan?');
-  check('garantía en flujo: responde la frase EXACTA del dueño',
-    (r.d.texto || '').includes(FRASE), r.d.texto);
+  check('garantía en flujo: responde la frase profesional EXACTA aprobada',
+    (r.d.texto || '').includes(FRASE_GARANTIA), r.d.texto);
   check('garantía en flujo: la pregunta NO quedó como dirección ni como mix',
     !r.conv.flow.datos.direccion && /3000/.test(r.conv.flow.datos.mix || ''),
     JSON.stringify(r.conv.flow.datos));
@@ -218,8 +240,9 @@ check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
 {
   const conv = db.upsertConversation('15553330006', 'Combinada');
   const r = turno(conv, '¿De qué planta viene y garantizan la calidad?');
-  check('combinada: responde la frase EXACTA del dueño',
-    (r.d.texto || '').includes(FRASE), r.d.texto);
+  check('combinada: responde una de las frases EXACTAS (planta o garantía)',
+    (r.d.texto || '').includes(FRASE_PLANTA) || (r.d.texto || '').includes(FRASE_GARANTIA),
+    r.d.texto);
   check('combinada: nada de «no entendí»',
     !/no (le )?entend/i.test(r.d.texto || ''), r.d.texto);
 }
@@ -230,8 +253,9 @@ check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
   let r = turno(conv, 'Hola, necesito concreto');
   r = turno(r.conv, 'No se lo que es una yarda?');
   r = turno(r.conv, 'es un garage de una planta');
-  check('trampa: «garage de una planta» NO responde la frase de planta',
-    !(r.d.texto || '').includes(FRASE), r.d.texto);
+  check('trampa: «garage de una planta» NO responde la frase de planta ni la de garantía',
+    !(r.d.texto || '').includes(FRASE_PLANTA) && !(r.d.texto || '').includes(FRASE_GARANTIA),
+    r.d.texto);
   check('trampa: el modo medidas sigue activo y no pregunta yardas de vuelta',
     r.conv.flow.esperandoMedidas === true && !(r.d.texto || '').includes(PREG_YARDAS),
     r.d.texto);
@@ -246,11 +270,21 @@ check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
   const conv = db.upsertConversation('15553330010', 'Saludo Pregunta');
   const r = turno(conv, 'Hola, ¿de qué planta traen el cemento?');
   check('saludo+pregunta: responde la frase EXACTA del dueño',
-    (r.d.texto || '').includes(FRASE), r.d.texto);
+    (r.d.texto || '').includes(FRASE_PLANTA), r.d.texto);
   const conv2 = db.upsertConversation('15553330011', 'Greeting Question');
   const r2 = turno(conv2, 'Hi, which plant do you use?');
   check('saludo+pregunta EN: responde la frase en inglés (sin caer en la bienvenida)',
-    (r2.d.texto || '').includes(FRASE_EN), r2.d.texto);
+    (r2.d.texto || '').includes(FRASE_PLANTA_EN), r2.d.texto);
+}
+
+// ---------- Saludo UNIDO a la pregunta de garantía ----------
+{
+  const conv = db.upsertConversation('15553330012', 'Saludo Garantía');
+  const r = turno(conv, 'Hola, ¿ustedes me dan garantía por su cemento?');
+  check('saludo+garantía: responde la frase profesional EXACTA aprobada',
+    (r.d.texto || '').includes(FRASE_GARANTIA), r.d.texto);
+  check('saludo+garantía: sale con intent «garantia»',
+    r.d.intent === 'garantia', r.d.intent);
 }
 
 // ---------- Inglés SIN flujo ----------
@@ -258,11 +292,11 @@ check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
   const conv = db.upsertConversation('15553330008', 'English Plant');
   const r = turno(conv, 'Which plant does the concrete come from?');
   check('planta EN: responde la frase en inglés',
-    (r.d.texto || '').includes(FRASE_EN), r.d.texto);
+    (r.d.texto || '').includes(FRASE_PLANTA_EN), r.d.texto);
   const conv2 = db.upsertConversation('15553330009', 'English Warranty');
   const r2 = turno(conv2, 'Do you guarantee the concrete?');
-  check('garantía EN: responde la frase en inglés',
-    (r2.d.texto || '').includes(FRASE_EN), r2.d.texto);
+  check('garantía EN: responde la frase profesional en inglés',
+    (r2.d.texto || '').includes(FRASE_GARANTIA_EN), r2.d.texto);
 }
 
 console.log(`\nplanta-garantia: ${ok}/${total} checks OK`);

@@ -7463,7 +7463,7 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
     return {
       responder: true,
       texto:
-        (idiomaMsg === 'en' ? RESPUESTA_PLANTA_GARANTIA_EN : RESPUESTA_PLANTA_GARANTIA_ES) +
+        (idiomaMsg === 'en' ? RESPUESTA_PLANTA_EN : RESPUESTA_PLANTA_ES) +
         '\n' +
         preguntaPara('yardas', conversacion.flow.datos, idiomaMsg),
       intent: 'planta_origen',
@@ -7477,18 +7477,19 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
   ) {
     // ¿GARANTIZAN LA CALIDAD? SIN FLUJO (corrección
     // 2026-11-12, caso Alejandro Maita — la preguntó dos
-    // veces y caía en «no le entendí»): la garantía que el
-    // dueño definió es la frase de la planta más cercana
-    // entregada por nosotros, sin prometer nada más. Se
-    // responde con la frase EXACTA y se ABRE la cotización
-    // en el paso de las yardas, mismo patrón que la de
-    // construcción.
+    // veces y caía en «no le entendí»): se responde con la
+    // versión profesional de la garantía aprobada por el
+    // dueño (mix y PSI exactos pedidos, entregado por
+    // nosotros desde la planta más cercana, ticket de
+    // planta que lo respalda y revisión inmediata si no
+    // corresponde) y se ABRE la cotización en el paso de
+    // las yardas, mismo patrón que la de construcción.
     conversacion.flow = flujoNuevo('cotizacion', textoCliente);
     db.setConversationFlow(conversacion.id, conversacion.flow);
     return {
       responder: true,
       texto:
-        (idiomaMsg === 'en' ? RESPUESTA_PLANTA_GARANTIA_EN : RESPUESTA_PLANTA_GARANTIA_ES) +
+        (idiomaMsg === 'en' ? RESPUESTA_GARANTIA_EN : RESPUESTA_GARANTIA_ES) +
         '\n' +
         preguntaPara('yardas', conversacion.flow.datos, idiomaMsg),
       intent: 'garantia',
