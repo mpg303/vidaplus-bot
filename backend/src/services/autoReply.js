@@ -1353,6 +1353,94 @@ function lineaMedidas(m, idioma) {
 }
 
 /**
+ * Cálculo de yardas desde medidas, con la MISMA regla de la
+ * calculadora del sitio que usa la captura de un solo mensaje:
+ * volumen en pies³ / 27, con 10% extra, redondeo a media yarda.
+ */
+function calcularYardasMedidas(largo, ancho, grosor) {
+  const bruto = ((largo * ancho * (grosor / 12)) / 27) * 1.1;
+  const redondeo = Math.max(1, Math.round(bruto * 2) / 2);
+  return String(redondeo);
+}
+
+/**
+ * MEDIDAS PARCIALES entre mensajes (corrección 2026-11-12, caso
+ * real Alejandro Maita): el cliente que no sabe de yardas da
+ * las medidas en VARIOS mensajes («es un garage» / «25 de
+ * largo» / «35 de ancho» / «a 4 pulgadas») y la captura de un
+ * solo mensaje no juntaba nada — el bot volvía a preguntar las
+ * yardas. Esta función extrae lo que TRAIGA el mensaje (el par
+ * «25 x 35», una dimensión etiquetada, el grosor, o un número
+ * pelón que rellena la dimensión que falta) y lo ACUMULA sobre
+ * lo ya guardado en el flujo (flow.medidasParciales). Solo se
+ * usa dentro del modo medidas (paso de yardas con el modo
+ * activo), nunca como captura libre general.
+ */
+function extraerMedidasParciales(texto, previas) {
+  const raw = String(texto || '');
+  const p = { ...(previas || {}) };
+  const num = (s) => parseFloat(String(s).replace(',', '.'));
+  const valido = (n, max) => Number.isFinite(n) && n > 0 && n <= max;
+  const mPar = raw.match(/(\d+(?:[.,]\d+)?)\s*(?:x|por|\*)\s*(\d+(?:[.,]\d+)?)/i);
+  if (mPar) {
+    const a = num(mPar[1]);
+    const b = num(mPar[2]);
+    if (valido(a, 1000)) p.largo = a;
+    if (valido(b, 1000)) p.ancho = b;
+  }
+  const mLargo =
+    raw.match(/(\d+(?:[.,]\d+)?)\s*(?:pies|ft|feet)?\s*(?:de\s+)?(?:largo|length|long)\b/i) ||
+    raw.match(/\b(?:largo|length)\s*(?:de|es|:)?\s*(\d+(?:[.,]\d+)?)/i);
+  if (mLargo && !mPar) {
+    const v = num(mLargo[1]);
+    if (valido(v, 1000)) p.largo = v;
+  }
+  const mAncho =
+    raw.match(/(\d+(?:[.,]\d+)?)\s*(?:pies|ft|feet)?\s*(?:de\s+)?(?:ancho|width|wide)\b/i) ||
+    raw.match(/\b(?:ancho|width)\s*(?:de|es|:)?\s*(\d+(?:[.,]\d+)?)/i);
+  if (mAncho && !mPar) {
+    const v = num(mAncho[1]);
+    if (valido(v, 1000)) p.ancho = v;
+  }
+  const mGrosor =
+    raw.match(/(\d+(?:[.,]\d+)?)\s*(?:pulgadas|inches|de grosor)/i) ||
+    raw.match(/grosor\s*(?:de)?\s*(\d+(?:[.,]\d+)?)/i) ||
+    raw.match(/\bthickness\s*(?:of)?\s*(\d+(?:[.,]\d+)?)/i) ||
+    raw.match(/\b(\d+(?:[.,]\d+)?)\s*(?:inches|in)\s+thick\b/i) ||
+    raw.match(/\b(\d+(?:[.,]\d+)?)\s*(?:in\b|")/);
+  if (mGrosor) {
+    const v = num(mGrosor[1]);
+    if (valido(v, 24)) p.grosor = v;
+  }
+  // Número pelón (SOLO dentro del modo medidas): si el mensaje
+  // trae un único número que NINGUNA etiqueta consumió, rellena
+  // la dimensión que falte (primero el largo, luego el ancho).
+  if ((!p.largo || !p.ancho) && !mPar && !mGrosor && !mLargo && !mAncho) {
+    const numeros = raw.match(/\d+(?:[.,]\d+)?/g) || [];
+    if (numeros.length === 1) {
+      const v = num(numeros[0]);
+      if (valido(v, 1000)) {
+        if (!p.largo && !mLargo) p.largo = v;
+        else if (!p.ancho && !mAncho) p.ancho = v;
+      }
+    }
+  }
+  return p;
+}
+
+/** Pregunta SOLO por la dimensión que falta en el modo medidas. */
+function lineaFaltaMedida(p, idioma) {
+  if (idioma === 'en') {
+    if (p.largo && !p.ancho) return `Got it: length ${p.largo} ft 📐 And the *width*, in feet?`;
+    if (p.ancho && !p.largo) return `Got it: width ${p.ancho} ft 📐 And the *length*, in feet?`;
+    return 'Tell me the *length* and the *width* in feet, and the *thickness* in inches (4 is standard) 📐';
+  }
+  if (p.largo && !p.ancho) return `Perfecto, anoté el largo: ${p.largo} pies 📐 ¿Cuánto mide de *ancho*, en pies?`;
+  if (p.ancho && !p.largo) return `Perfecto, anoté el ancho: ${p.ancho} pies 📐 ¿Cuánto mide de *largo*, en pies?`;
+  return 'Dígame el *largo* y el *ancho* en pies, y el *grosor* en pulgadas (lo normal son 4) 📐';
+}
+
+/**
  * Corrección cuando el cliente pide un PSI que NO existe
  * (regla del dueño, 2026-10-30, lista exacta dada a las 20:03):
  * los ÚNICOS mixes que existen son 3000, 3500, 3600, 4000, 4500
@@ -4328,6 +4416,18 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // la directa y se retoma el paso (bloque lateral más abajo,
   // junto al del día de semana); jamás se guarda como dato.
   const venden = !saludoPuro && !faq && !ciudad ? esPreguntaVendenConcreto(textoCliente) : false;
+  // ¿HACEN LA CONSTRUCCIÓN? (corrección 2026-11-12, caso
+  // Alejandro Maita): también es PREGUNTA — se responde con la
+  // frase exacta del dueño y el flujo sigue (bloque lateral más
+  // abajo); jamás se guarda como dato.
+  const construccion = !saludoPuro && !faq && !ciudad ? esPreguntaConstruccion(textoCliente) : false;
+  // MODO MEDIDAS (corrección 2026-11-12): estado del turno —
+  // medidasEnCurso = el cliente está dando las medidas a pedazos
+  // y aún no se puede calcular; lineaFalta = la pregunta por la
+  // única dimensión que falta (null cuando la línea de «no sabe
+  // yardas» ya lo pide todo).
+  let medidasEnCurso = false;
+  let lineaFalta = null;
 
   let detectados = {};
   let omitirCaptura = saludoPuro || !!faq;
@@ -4346,6 +4446,54 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     // guarda como dato, igual que antes. La línea de cobertura
     // se sigue respondiendo (más abajo) junto con lo capturado.
     detectados = extraerDatos(textoCliente, ciudad ? null : pasoPedido);
+    // MODO MEDIDAS PERSISTENTE + ACUMULACIÓN PARCIAL
+    // (corrección 2026-11-12, caso Alejandro Maita): cuando el
+    // cliente dice que no sabe de yardas, el modo queda ACTIVO
+    // en el flujo y cada mensaje suyo aporta lo que traiga
+    // (largo, ancho o grosor) hasta poder calcular. Sin esto,
+    // las medidas dadas en 3 mensajes nunca se juntaban y un
+    // «4 pulgadas» suelto hasta se anotaba como 4 yardas por la
+    // captura del número pelón.
+    const enModoMedidas = pasoPedido === 'yardas' && (noSabe || flow.esperandoMedidas);
+    // Las yardas solo cuentan como EXPLÍCITAS si el mensaje trae
+    // la unidad («10 yardas»): la captura normal anota cualquier
+    // número suelto como yardas, y en este modo un «25 de largo»
+    // o un «35» pelón son DIMENSIONES, no yardas.
+    const yardasExplicitas =
+      !!detectados.yardas && /\b(yardas?|yds?|yards?)\b/.test(` ${normalizar(textoCliente)} `);
+    if (enModoMedidas && (detectados.medidas || yardasExplicitas)) {
+      // Trajo las medidas completas de una vez, o mejor dio las
+      // yardas directo: el modo termina y manda lo capturado.
+      flow.esperandoMedidas = false;
+      delete flow.medidasParciales;
+    } else if (enModoMedidas) {
+      flow.esperandoMedidas = true;
+      const parciales = extraerMedidasParciales(textoCliente, flow.medidasParciales);
+      flow.medidasParciales = parciales;
+      if (parciales.largo && parciales.ancho) {
+        // Con largo y ancho ya se calcula (grosor dado o el
+        // estándar de 4): las yardas y las medidas entran como
+        // datos normales y el flujo sigue al mix.
+        const grosor = parciales.grosor || 4;
+        const cantidad = calcularYardasMedidas(parciales.largo, parciales.ancho, grosor);
+        detectados.yardas = { cantidad, plus: false };
+        detectados.medidas = { largo: parciales.largo, ancho: parciales.ancho, grosor, calculado: cantidad };
+        flow.esperandoMedidas = false;
+        delete flow.medidasParciales;
+      } else {
+        // Aún no se puede calcular: las «yardas» que la captura
+        // normal haya sacado de este mensaje (ej. el número de
+        // las pulgadas) NO valen; los demás datos sí.
+        delete detectados.yardas;
+        medidasEnCurso = true;
+        lineaFalta =
+          parciales.largo || parciales.ancho || parciales.grosor
+            ? lineaFaltaMedida(parciales, idioma)
+            : noSabe
+              ? null
+              : lineaNoSabeYardas(idioma);
+      }
+    }
     if (noSabe && !detectados.medidas) {
       // «No sé cuántas yardas» sin medidas: no es un dato; la
       // respuesta ofrece el cálculo por medidas.
@@ -4378,6 +4526,18 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       (k) => detectados[k] && !['direccion', 'nombre', 'compania'].includes(k)
     );
   if (vendenSinDato) {
+    detectados = {};
+    omitirCaptura = true;
+  }
+  // ¿HACEN LA CONSTRUCCIÓN? SIN DATO REAL: igual que la de
+  // vender — la pregunta jamás se captura como dato (en el paso
+  // de dirección se guardaría como si fuera la dirección).
+  const construccionSinDato =
+    construccion &&
+    !Object.keys(detectados).some(
+      (k) => detectados[k] && !['direccion', 'nombre', 'compania'].includes(k)
+    );
+  if (construccionSinDato) {
     detectados = {};
     omitirCaptura = true;
   }
@@ -4790,6 +4950,35 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       intentDetectado,
     };
   }
+  if (paso && construccion) {
+    // ¿HACEN LA CONSTRUCCIÓN? A MITAD DEL FLUJO (corrección
+    // 2026-11-12, caso Alejandro Maita): pregunta lateral — se
+    // responde con la frase EXACTA del dueño y se retoma el
+    // paso en el que íbamos; el flujo NO se toca. La frase no
+    // trae pregunta propia, así que el paso se vuelve a
+    // preguntar SIEMPRE al final (también en el de yardas).
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+    const partesCons = [];
+    if (corregidos.length) {
+      partesCons.push(
+        `${idioma === 'en' ? 'Got it, updated' : 'Perfecto, lo corrijo'}: ${corregidos.map((c) => confirmacionCorreccionDe(c, flow.datos, idioma)).join('; ')}.`
+      );
+    }
+    if (nuevos.length) {
+      partesCons.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
+    }
+    partesCons.push(idioma === 'en' ? RESPUESTA_CONSTRUCCION_EN : RESPUESTA_CONSTRUCCION_ES);
+    partesCons.push(preguntaPara(paso, flow.datos, idioma));
+    return {
+      responder: true,
+      texto: partesCons.join('\n'),
+      intent: flow.tipo,
+      topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+      intentDetectado,
+    };
+  }
+
   if (paso && esPreguntaVendenConcreto(textoCliente)) {
     // ¿VENDEN CONCRETO? A MITAD DEL FLUJO (orden del dueño,
     // 2026-11-04): pregunta lateral suelta — se responde la
@@ -4914,7 +5103,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   const huboAvance =
     nuevos.length > 0 || corregidos.length > 0 || preguntaAclararPago || preguntaAmPm || oferta7am || preguntaRangoYardas || paso !== pasoPedido;
   const preguntaLegitima =
-    saludoPuro || !!faq || !!ciudad || (noSabe && !detectados.medidas) ||
+    saludoPuro || !!faq || !!ciudad || (noSabe && !detectados.medidas) || medidasEnCurso ||
     esPreguntaPrecio(textoCliente) || !!preguntaSobreAire(textoCliente) || !!detectados.medidas ||
     preguntaPedido || !!pagoAdelantado || !!detectados.psiInvalido || !!detectados.mixInvalido || !!detectados.fechaInvalida;
   if (huboAvance) {
@@ -5041,7 +5230,7 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     // paso va al final, como siempre).
     partes.push(idioma === 'en' ? LINEA_CUANDO_PEDIR_EN : LINEA_CUANDO_PEDIR_ES);
   }
-  if (noSabe && !detectados.medidas) {
+  if (noSabe && !detectados.medidas && !lineaFalta) {
     partes.push(lineaNoSabeYardas(idioma));
   }
   // Pregunta de precio a mitad del flujo (o al abrirlo): si el
@@ -5083,6 +5272,15 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   }
   if (escalado) {
     partes.push(textoEscalado(paso, flow.datos, idioma));
+  } else if (medidasEnCurso) {
+    // MODO MEDIDAS INCOMPLETO (corrección 2026-11-12): la
+    // respuesta termina preguntando SOLO la dimensión que
+    // falta (lineaFalta) — o nada más, cuando la línea de «no
+    // sabe yardas» ya pidió las medidas completas. NUNCA se
+    // vuelve a preguntar «¿cuántas yardas necesita?» tras
+    // ofrecer el cálculo por medidas (esa era la falla 1 del
+    // caso Alejandro Maita).
+    if (lineaFalta) partes.push(lineaFalta);
   } else {
     partes.push(
       oferta7am
@@ -5114,6 +5312,10 @@ function abreFlujo(intent, textoCliente) {
   // Una pregunta de precio («¿cuánto?», «how much»…) abre el flujo:
   // se responde la línea de precio y se arranca pidiendo las yardas.
   if (esPreguntaPrecio(textoCliente)) return true;
+  // «No sé lo que es una yarda» como primer mensaje también abre
+  // la cotización (corrección 2026-11-12): sin flujo, el modo
+  // medidas no existe y la oferta de cálculo no llegaba.
+  if (esNoSabeYardas(textoCliente)) return true;
   const d = extraerDatos(textoCliente, null);
   if (d.yardas) return true;
   const t = normalizar(textoCliente);
@@ -6068,7 +6270,7 @@ function esInicioNuevaConsulta(texto) {
       t
     );
   const temaServicio =
-    /\b(concreto|hormigon|concrete|cemento|cement|pompa|pump|entregas?|delivery|servicios?|services?)\b/.test(
+    /\b(concreto|hormigon|concrete|cemento|cement|pompa|pump|entregas?|delivery|servicios?|services?|construccion|construction)\b/.test(
       t
     );
   if (verboServicio && temaServicio) return true;
@@ -6126,6 +6328,62 @@ const RESPUESTA_VENDEN_CONCRETO_ES =
   '¡Claro que sí! Vendemos concreto por yarda cúbica en Dallas–Fort Worth. ¿Cuántas yardas necesita?';
 const RESPUESTA_VENDEN_CONCRETO_EN =
   'Yes, we do! We sell concrete by the cubic yard in Dallas–Fort Worth. How many yards do you need?';
+
+/**
+ * ¿HACEN LA CONSTRUCCIÓN? — RESPUESTA DIRECTA (corrección
+ * 2026-11-12, orden y frase EXACTA del dueño tras el caso real
+ * de Alejandro Maita, que la preguntó DOS veces —«¿solo venden
+ * el cemento o también hacen la construcción?»— y el bot no la
+ * entendió ninguna): JMP vende el concreto; la construcción la
+ * hace un crew que JMP le puede conseguir. La frase en español
+ * se usa PALABRA POR PALABRA como la dictó el dueño, sin
+ * agregar explicación, oferta ni pregunta dentro de la frase;
+ * el flujo sigue con su propia pregunta de paso, como en la
+ * respuesta de «venden concreto». El detector es estrecho
+ * (verbo de hacer/encargarse + construcción/instalación, o la
+ * forma «solo venden… o también…» con construcción) y excluye
+ * lo que habla de la orden existente, igual que el de vender.
+ */
+const RESPUESTA_CONSTRUCCION_ES =
+  'La construcción no la hacemos pero le podemos conseguir el crew adecuados para su proyecto';
+const RESPUESTA_CONSTRUCCION_EN =
+  "We don't do the construction ourselves, but we can get you the right crew for your project.";
+
+function esPreguntaConstruccion(texto) {
+  const t = ` ${normalizar(texto)} `;
+  // Habla de la orden existente: sigue como corrección o nota.
+  if (
+    detectarReferenciaOrden(texto) ||
+    /\b(mi|la|esa|esta|su) orden\b/.test(t) ||
+    /\bmy order\b/.test(t) ||
+    /\b(cambiar|cambien|cambio de|corregir|corrige|cancelar|cancela|change|correct|cancel)\b/.test(t)
+  ) {
+    return false;
+  }
+  // La pregunta de precio ya tiene su ruta.
+  if (esPreguntaPrecio(texto)) return false;
+  // ES: verbo de hacer/encargarse + construcción/instalación/
+  // colocación/mano de obra, en cualquier orden dentro de la
+  // frase («¿hacen la construcción?», «¿la construcción también
+  // la hacen ustedes?», «¿ustedes lo instalan?»).
+  if (
+    /\b(hacen|hace|realizan|realiza|ofrecen|ofrece|instalan|instala|colocan|coloca|se encargan|encargan)\b[^.?!]*\b(construccion|instalacion|colocacion|mano de obra)\b/.test(t) ||
+    /\b(construccion|instalacion|colocacion)\b[^.?!]*\b(hacen|hace|realizan|ofrecen|instalan|tambien|ustedes)\b/.test(t) ||
+    /\b(instalan|instala|colocan|coloca)\b/.test(t) ||
+    /\bsolo venden\b[^.?!]*\bo tambien\b[^.?!]*\b(construccion|cemento|concreto)\b/.test(t)
+  ) {
+    return true;
+  }
+  // EN: do you (also) do/handle the construction/installation.
+  if (
+    /\bdo you\b[^.?!]*\b(construction|installation)\b/.test(t) ||
+    /\byou (guys )?(do|install|handle)\b[^.?!]*\b(construction|installation)\b/.test(t) ||
+    /\b(construction|installation)\b[^.?!]*\b(too|also|as well)\b/.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
 
 function esPreguntaVendenConcreto(texto) {
   const t = ` ${normalizar(texto)} `;
@@ -6861,6 +7119,29 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
   // pregunta cuántas yardas): así la cantidad que conteste
   // el cliente —«10» o «10 yardas»— la captura el paso,
   // igual que en la pregunta del aire suelta.
+  if (intent.id === 'otro' && esPreguntaConstruccion(textoCliente)) {
+    // ¿HACEN LA CONSTRUCCIÓN? SIN FLUJO (corrección 2026-11-12,
+    // caso Alejandro Maita — la preguntó dos veces y caía en
+    // «no le entendí»): se responde con la frase EXACTA del
+    // dueño y se ABRE la cotización en el paso de las yardas,
+    // mismo patrón que la de «venden concreto»; la pregunta de
+    // las yardas va tras la frase para que el flujo siga. Va
+    // ANTES del bloque de vender: la pregunta combinada («¿solo
+    // venden el cemento o también hacen la construcción?») es
+    // de construcción, no de venta.
+    conversacion.flow = flujoNuevo('cotizacion', textoCliente);
+    db.setConversationFlow(conversacion.id, conversacion.flow);
+    return {
+      responder: true,
+      texto:
+        (idiomaMsg === 'en' ? RESPUESTA_CONSTRUCCION_EN : RESPUESTA_CONSTRUCCION_ES) +
+        '\n' +
+        preguntaPara('yardas', conversacion.flow.datos, idiomaMsg),
+      intent: 'construccion',
+      topic: 'si hacen la construcción',
+    };
+  }
+
   if (intent.id === 'otro' && esPreguntaVendenConcreto(textoCliente)) {
     conversacion.flow = flujoNuevo('cotizacion', textoCliente);
     db.setConversationFlow(conversacion.id, conversacion.flow);
@@ -7045,6 +7326,9 @@ module.exports = {
   esPreguntaPrecio,
   esPreguntaPrecioPorYarda,
   esPreguntaVendenConcreto,
+  esPreguntaConstruccion,
+  extraerMedidasParciales,
+  calcularYardasMedidas,
   esPidePagarDespues,
   esPidePompaServicio,
   esPideNumeroPersonal,
