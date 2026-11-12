@@ -6455,7 +6455,7 @@ function esPreguntaConstruccion(texto) {
  * existente o describe el proyecto.
  */
 const RESPUESTA_PLANTA_GARANTIA_ES =
-  'El concreto se lo entregamos nosotros desde la planta más cercana a su localización, así le aseguramos que llegue perfecto.';
+  'Claro que si tienen garantia nuestros trabajos. El concreto se lo entregamos nosotros desde la planta más cercana a su localización, así le aseguramos que llegue perfecto.';
 const RESPUESTA_PLANTA_GARANTIA_EN =
   'We deliver the concrete ourselves from the plant closest to your location, so we make sure it arrives perfect.';
 

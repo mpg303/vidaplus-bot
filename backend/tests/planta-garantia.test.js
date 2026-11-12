@@ -52,7 +52,7 @@ function turno(conv, texto) {
 }
 
 const FRASE =
-  'El concreto se lo entregamos nosotros desde la planta más cercana a su localización, así le aseguramos que llegue perfecto.';
+  'Claro que si tienen garantia nuestros trabajos. El concreto se lo entregamos nosotros desde la planta más cercana a su localización, así le aseguramos que llegue perfecto.';
 const FRASE_EN =
   'We deliver the concrete ourselves from the plant closest to your location, so we make sure it arrives perfect.';
 const PREG_YARDAS = '¿Cuántas yardas necesita?';
@@ -64,6 +64,8 @@ check('frase: dice que lo entregamos nosotros', /entregamos nosotros/.test(FRASE
 check('frase: NUNCA «despachado por la planta»', !/despachado por la planta/i.test(FRASE));
 check('frase: sin la redundancia «se lo llevamos» (corrección 16:09)',
   !/se lo llevamos/i.test(FRASE));
+check('frase: abre con la garantía dictada por el dueño (corrección 16:12)',
+  FRASE.startsWith('Claro que si tienen garantia nuestros trabajos.'));
 
 // ---------- Unidades: detector de planta de origen ----------
 {
