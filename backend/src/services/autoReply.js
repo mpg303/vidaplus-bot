@@ -4429,6 +4429,11 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // jamás se guardan como dato.
   const plantaOrigen = !saludoPuro && !faq && !ciudad ? esPreguntaPlantaOrigen(textoCliente) : false;
   const garantia = !saludoPuro && !faq && !ciudad ? esPreguntaGarantia(textoCliente) : false;
+  // ¿SOLO DELIVERY? (corrección 2026-11-12, caso Alejandro
+  // Maita): también es PREGUNTA bajo la regla general — se
+  // responde con la política del dueño (bloque lateral más
+  // abajo); jamás se guarda como dato.
+  const soloDelivery = !saludoPuro && !faq && !ciudad ? esPreguntaSoloDelivery(textoCliente) : false;
   // MODO MEDIDAS (corrección 2026-11-12): estado del turno —
   // medidasEnCurso = el cliente está dando las medidas a pedazos
   // y aún no se puede calcular; lineaFalta = la pregunta por la
@@ -4559,6 +4564,18 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       (k) => detectados[k] && !['direccion', 'nombre', 'compania'].includes(k)
     );
   if (plantaGarantiaSinDato) {
+    detectados = {};
+    omitirCaptura = true;
+  }
+  // ¿SOLO DELIVERY? La pregunta jamás se captura como dato,
+  // y aquí la limpieza es INCONDICIONAL (modelo de
+  // pidePagarDespues), no como en las FAQ de arriba: la
+  // frase natural de esta pregunta trae palabras-bala de
+  // otros pasos — «solo OCUPO la entrega» en el paso de la
+  // pompa se anotaba como «sí, ocupa pompa». El bloque
+  // lateral responde y vuelve a preguntar el paso, así que
+  // ningún dato real se pierde: el cliente lo repite.
+  if (soloDelivery) {
     detectados = {};
     omitirCaptura = true;
   }
@@ -5004,12 +5021,12 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     // ¿DE QUÉ PLANTA SALE? / ¿GARANTIZAN LA CALIDAD? A
     // MITAD DEL FLUJO (corrección 2026-11-12, caso
     // Alejandro Maita): pregunta lateral — se responde con
-    // la frase EXACTA del dueño (la garantía que él definió
-    // es esa: planta más cercana y entregado por nosotros)
-    // y se retoma el paso en el que íbamos; el flujo NO se
-    // toca. La frase no trae pregunta propia, así que el
-    // paso se vuelve a preguntar SIEMPRE al final (también
-    // en el de yardas).
+    // la frase que toca según la pregunta (la breve de
+    // planta de origen o la profesional de garantía
+    // aprobada por el dueño) y se retoma el paso en el que
+    // íbamos; el flujo NO se toca. La frase no trae
+    // pregunta propia, así que el paso se vuelve a
+    // preguntar SIEMPRE al final (también en el de yardas).
     db.setConversationFlow(conversacion.id, flow);
     conversacion.flow = flow;
     const partesPlanta = [];
@@ -5021,11 +5038,51 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     if (nuevos.length) {
       partesPlanta.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
     }
-    partesPlanta.push(idioma === 'en' ? RESPUESTA_PLANTA_GARANTIA_EN : RESPUESTA_PLANTA_GARANTIA_ES);
+    partesPlanta.push(
+      garantia
+        ? idioma === 'en'
+          ? RESPUESTA_GARANTIA_EN
+          : RESPUESTA_GARANTIA_ES
+        : idioma === 'en'
+          ? RESPUESTA_PLANTA_EN
+          : RESPUESTA_PLANTA_ES
+    );
     partesPlanta.push(preguntaPara(paso, flow.datos, idioma));
     return {
       responder: true,
       texto: partesPlanta.join('\n'),
+      intent: flow.tipo,
+      topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+      intentDetectado,
+    };
+  }
+
+  if (paso && soloDelivery) {
+    // ¿SOLO DELIVERY? A MITAD DEL FLUJO (corrección
+    // 2026-11-12, caso Alejandro Maita): pregunta lateral —
+    // se responde con la política EXACTA del dueño (NO es un
+    // «sí» pelado: JMP prefiere VENDER el concreto y
+    // entregarlo, porque así se hace responsable de la
+    // calidad) y se retoma el paso en el que íbamos; el
+    // flujo NO se toca. La frase no trae pregunta propia,
+    // así que el paso se vuelve a preguntar SIEMPRE al
+    // final (también en el de yardas).
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+    const partesDelivery = [];
+    if (corregidos.length) {
+      partesDelivery.push(
+        `${idioma === 'en' ? 'Got it, updated' : 'Perfecto, lo corrijo'}: ${corregidos.map((c) => confirmacionCorreccionDe(c, flow.datos, idioma)).join('; ')}.`
+      );
+    }
+    if (nuevos.length) {
+      partesDelivery.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
+    }
+    partesDelivery.push(idioma === 'en' ? RESPUESTA_SOLO_DELIVERY_EN : RESPUESTA_SOLO_DELIVERY_ES);
+    partesDelivery.push(preguntaPara(paso, flow.datos, idioma));
+    return {
+      responder: true,
+      texto: partesDelivery.join('\n'),
       intent: flow.tipo,
       topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
       intentDetectado,
@@ -6441,23 +6498,32 @@ function esPreguntaConstruccion(texto) {
 /**
  * ¿DE QUÉ PLANTA SALE EL CONCRETO? y ¿GARANTIZAN LA
  * CALIDAD? (corrección 2026-11-12, caso Alejandro Maita:
- * las preguntó las dos y el bot no entendió ninguna). La
- * garantía que el dueño definió ES esta misma respuesta:
- * el concreto se lleva de la planta más cercana a la
- * localización del cliente y se lo ENTREGA JMP — redacción
- * del dueño (2026-11-12): «entregado por nosotros», NUNCA
- * presentar la entrega como un despacho de la planta. La
- * frase se responde tal cual, sin prometer nada más, y el
- * flujo de cotización sigue con su propia pregunta de
- * paso, como en la respuesta de construcción. Los
- * detectores son estrechos (forma de pregunta de origen o
- * de garantía) y excluyen lo que habla de la orden
- * existente o describe el proyecto.
+ * las preguntó las dos y el bot no entendió ninguna).
+ * PLANTA DE ORIGEN: frase breve del dueño — el concreto
+ * sale de la planta más cercana a la localización del
+ * cliente y se lo ENTREGA JMP. GARANTÍA: versión
+ * profesional aprobada por el dueño el 2026-11-12 (le
+ * gustó la redacción larga — mix y PSI exactos pedidos,
+ * ticket de planta que lo respalda y revisión inmediata
+ * si no corresponde — con SU ajuste): «entregado por
+ * nosotros», NUNCA presentar la entrega como un despacho
+ * de la planta, y el concreto sale de la planta más
+ * cercana a la localización del cliente. Las respuestas
+ * se dan tal cual están escritas y el flujo de cotización
+ * sigue con su propia pregunta de paso, como en la
+ * respuesta de construcción. Los detectores son estrechos
+ * (forma de pregunta de origen o de garantía) y excluyen
+ * lo que habla de la orden existente o describe el
+ * proyecto.
  */
-const RESPUESTA_PLANTA_GARANTIA_ES =
-  'Claro que si tienen garantia nuestros trabajos. El concreto se lo entregamos nosotros desde la planta más cercana a su localización, así le aseguramos que llegue perfecto.';
-const RESPUESTA_PLANTA_GARANTIA_EN =
+const RESPUESTA_PLANTA_ES =
+  'El concreto se lo entregamos nosotros desde la planta más cercana a su localización, así le aseguramos que llegue perfecto.';
+const RESPUESTA_PLANTA_EN =
   'We deliver the concrete ourselves from the plant closest to your location, so we make sure it arrives perfect.';
+const RESPUESTA_GARANTIA_ES =
+  'Claro que sí, le garantizamos la calidad. El concreto que usted ordena se lo entregamos nosotros, desde la planta más cercana a su localización, para que le llegue en perfectas condiciones, con el mix y la resistencia (PSI) exactos que pidió, y su ticket de planta lo respalda. Si el concreto entregado no correspondiera a lo ordenado, lo revisamos de inmediato y respondemos por ello.';
+const RESPUESTA_GARANTIA_EN =
+  'Yes, of course, we guarantee the quality. The concrete you order is delivered by us, from the plant closest to your location, so it arrives in perfect condition, with the exact mix and strength (PSI) you asked for, and your plant ticket backs it up. If the concrete delivered did not match what you ordered, we review it right away and stand behind it.';
 
 function esPreguntaPlantaOrigen(texto) {
   const t = ` ${normalizar(texto)} `;
@@ -6534,6 +6600,85 @@ function esPreguntaGarantia(texto) {
     (/\?/.test(texto) ||
       /^(do|does|is|can|what)\b/.test(t.trim()) ||
       /\byou (offer|give|provide)\b/.test(t))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * ¿SOLO DELIVERY? (corrección 2026-11-12, caso Alejandro
+ * Maita: preguntó dos veces «Si solo quiero el delivery
+ * ustedes me lo hacen?» y el bot no entendió ninguna). La
+ * política del dueño (dictada el 2026-11-12 16:13) NO es un
+ * «sí» pelado: JMP prefiere VENDERLE el concreto al cliente
+ * (y entregárselo), porque así JMP se hace responsable de
+ * la calidad del concreto — no es un servicio de transporte
+ * de concreto comprado a otro. La frase se responde tal
+ * cual y la cotización sigue su curso (el delivery ES el
+ * servicio de JMP: vender el concreto entregado). El
+ * detector es estrecho: exige «solo/nomás/only/just» pegado
+ * a delivery/entrega, o la forma directa de preguntar si
+ * JMP hace el delivery; NO dispara cuando el cliente da su
+ * dirección de entrega, pregunta la hora/día de SU entrega
+ * o confirma datos de su pedido — ahí «delivery»/«entrega»
+ * es parte del flujo, no esta pregunta.
+ */
+const RESPUESTA_SOLO_DELIVERY_ES =
+  'Preferiblemente le vendemos el concreto nosotros y se lo entregamos en su obra, así nos hacemos responsables de la calidad del concreto.';
+const RESPUESTA_SOLO_DELIVERY_EN =
+  'Preferably, we sell you the concrete ourselves and deliver it to your job site, so we take responsibility for the quality of the concrete.';
+
+function esPreguntaSoloDelivery(texto) {
+  const t = ` ${normalizar(texto)} `;
+  if (!t || t.trim().length < 3) return false;
+  // Habla de la orden existente: sigue como corrección o nota.
+  if (
+    detectarReferenciaOrden(texto) ||
+    /\b(mi|la|esa|esta|su) orden\b/.test(t) ||
+    /\bmy order\b/.test(t) ||
+    /\b(cambiar|cambien|cambio de|corregir|corrige|cancelar|cancela|change|correct|cancel)\b/.test(t)
+  ) {
+    return false;
+  }
+  // Está dando su dirección de entrega o preguntando la
+  // hora/día de SU entrega: es el flujo normal, no esta
+  // pregunta.
+  if (
+    /\bdelivery (address|date|day|time)\b/.test(t) ||
+    /\bdireccion de (la )?entrega\b/.test(t) ||
+    /\b(a que hora|cuando|cuanto tarda|que dia)\b[^.?!]*\b(entrega|delivery)\b/.test(t)
+  ) {
+    return false;
+  }
+  // La pregunta de precio ya tiene su ruta.
+  if (esPreguntaPrecio(texto)) return false;
+  // ES: «solo / solamente / nomás / nada más» pegado a
+  // delivery/entrega, en cualquier orden («solo quiero el
+  // delivery», «solo el delivery», «nomás la entrega»,
+  // «la entrega nomás»).
+  if (
+    /\b(solo|solamente|unicamente|nomas|nada mas)\b[^.?!]{0,40}\b(delivery|delibery|entrega|reparto|flete)\b/.test(t) ||
+    /\b(delivery|delibery|entrega)\b[^.?!]{0,20}\b(solo|solamente|nomas)\b/.test(t)
+  ) {
+    return true;
+  }
+  // ES: forma directa de preguntar si JMP hace el delivery
+  // («¿ustedes hacen el delivery?», «¿ustedes hacen
+  // entregas?»): exige forma de pregunta con «?».
+  if (
+    /\?/.test(texto) &&
+    (/\b(hacen|hace|realizan|ofrecen)\b[^.?!]{0,25}\b(delivery|entregas?|reparto)\b/.test(t) ||
+      /\bustedes\b[^.?!]{0,25}\b(delivery|entregas?)\b/.test(t))
+  ) {
+    return true;
+  }
+  // EN: «only/just» + delivery, «delivery only», «do you
+  // … deliver/delivery» (admite «do you guys do delivery»).
+  if (
+    /\b(only|just)\b[^.?!]{0,40}\b(delivery|delibery|deliver|delivered)\b/.test(t) ||
+    /\bdelivery only\b/.test(t) ||
+    /\bdo you\b[^.?!]{0,20}\b(deliver|delivery|deliveries)\b/.test(t)
   ) {
     return true;
   }
@@ -7351,6 +7496,32 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
     };
   }
 
+  if (
+    (intent.id === 'otro' || (intent.id === 'saludo' && !esSaludoPuro(textoCliente))) &&
+    esPreguntaSoloDelivery(textoCliente)
+  ) {
+    // ¿SOLO DELIVERY? SIN FLUJO (corrección 2026-11-12, caso
+    // Alejandro Maita — la preguntó dos veces y caía en «no
+    // le entendí»): se responde con la política EXACTA del
+    // dueño — NO un «sí» pelado: preferiblemente JMP VENDE
+    // el concreto y lo entrega, porque así se hace
+    // responsable de la calidad — y se ABRE la cotización
+    // en el paso de las yardas, mismo patrón que la de
+    // construcción; la pregunta de las yardas va tras la
+    // frase para que el flujo siga.
+    conversacion.flow = flujoNuevo('cotizacion', textoCliente);
+    db.setConversationFlow(conversacion.id, conversacion.flow);
+    return {
+      responder: true,
+      texto:
+        (idiomaMsg === 'en' ? RESPUESTA_SOLO_DELIVERY_EN : RESPUESTA_SOLO_DELIVERY_ES) +
+        '\n' +
+        preguntaPara('yardas', conversacion.flow.datos, idiomaMsg),
+      intent: 'solo_delivery',
+      topic: 'si hace solo el delivery',
+    };
+  }
+
   if (intent.id === 'otro' && esPreguntaVendenConcreto(textoCliente)) {
     conversacion.flow = flujoNuevo('cotizacion', textoCliente);
     db.setConversationFlow(conversacion.id, conversacion.flow);
@@ -7538,6 +7709,7 @@ module.exports = {
   esPreguntaConstruccion,
   esPreguntaPlantaOrigen,
   esPreguntaGarantia,
+  esPreguntaSoloDelivery,
   extraerMedidasParciales,
   calcularYardasMedidas,
   esPidePagarDespues,
