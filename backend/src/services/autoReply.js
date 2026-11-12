@@ -4421,6 +4421,14 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
   // frase exacta del dueño y el flujo sigue (bloque lateral más
   // abajo); jamás se guarda como dato.
   const construccion = !saludoPuro && !faq && !ciudad ? esPreguntaConstruccion(textoCliente) : false;
+  // ¿DE QUÉ PLANTA SALE? / ¿GARANTIZAN LA CALIDAD?
+  // (corrección 2026-11-12, caso Alejandro Maita): también
+  // son PREGUNTAS bajo la regla general — se responden con
+  // la frase del dueño (planta más cercana, entregado por
+  // nosotros) y el flujo sigue (bloque lateral más abajo);
+  // jamás se guardan como dato.
+  const plantaOrigen = !saludoPuro && !faq && !ciudad ? esPreguntaPlantaOrigen(textoCliente) : false;
+  const garantia = !saludoPuro && !faq && !ciudad ? esPreguntaGarantia(textoCliente) : false;
   // MODO MEDIDAS (corrección 2026-11-12): estado del turno —
   // medidasEnCurso = el cliente está dando las medidas a pedazos
   // y aún no se puede calcular; lineaFalta = la pregunta por la
@@ -4538,6 +4546,19 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
       (k) => detectados[k] && !['direccion', 'nombre', 'compania'].includes(k)
     );
   if (construccionSinDato) {
+    detectados = {};
+    omitirCaptura = true;
+  }
+  // ¿PLANTA DE ORIGEN / GARANTÍA? SIN DATO REAL: igual que
+  // las de arriba — la pregunta jamás se captura como dato
+  // (en el paso de dirección se guardaría como si fuera la
+  // dirección, en el del mix como si fuera el mix).
+  const plantaGarantiaSinDato =
+    (plantaOrigen || garantia) &&
+    !Object.keys(detectados).some(
+      (k) => detectados[k] && !['direccion', 'nombre', 'compania'].includes(k)
+    );
+  if (plantaGarantiaSinDato) {
     detectados = {};
     omitirCaptura = true;
   }
@@ -4973,6 +4994,38 @@ function manejarFlujo(conversacion, textoCliente, esNuevo, intentDetectado) {
     return {
       responder: true,
       texto: partesCons.join('\n'),
+      intent: flow.tipo,
+      topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
+      intentDetectado,
+    };
+  }
+
+  if (paso && (plantaOrigen || garantia)) {
+    // ¿DE QUÉ PLANTA SALE? / ¿GARANTIZAN LA CALIDAD? A
+    // MITAD DEL FLUJO (corrección 2026-11-12, caso
+    // Alejandro Maita): pregunta lateral — se responde con
+    // la frase EXACTA del dueño (la garantía que él definió
+    // es esa: planta más cercana y entregado por nosotros)
+    // y se retoma el paso en el que íbamos; el flujo NO se
+    // toca. La frase no trae pregunta propia, así que el
+    // paso se vuelve a preguntar SIEMPRE al final (también
+    // en el de yardas).
+    db.setConversationFlow(conversacion.id, flow);
+    conversacion.flow = flow;
+    const partesPlanta = [];
+    if (corregidos.length) {
+      partesPlanta.push(
+        `${idioma === 'en' ? 'Got it, updated' : 'Perfecto, lo corrijo'}: ${corregidos.map((c) => confirmacionCorreccionDe(c, flow.datos, idioma)).join('; ')}.`
+      );
+    }
+    if (nuevos.length) {
+      partesPlanta.push(`Perfecto, ${nuevos.map((c) => confirmacionDe(c, flow.datos, idioma)).join('; ')}.`);
+    }
+    partesPlanta.push(idioma === 'en' ? RESPUESTA_PLANTA_GARANTIA_EN : RESPUESTA_PLANTA_GARANTIA_ES);
+    partesPlanta.push(preguntaPara(paso, flow.datos, idioma));
+    return {
+      responder: true,
+      texto: partesPlanta.join('\n'),
       intent: flow.tipo,
       topic: flow.tipo === 'pedido' ? 'su pedido' : 'su cotización',
       intentDetectado,
@@ -6385,6 +6438,108 @@ function esPreguntaConstruccion(texto) {
   return false;
 }
 
+/**
+ * ¿DE QUÉ PLANTA SALE EL CONCRETO? y ¿GARANTIZAN LA
+ * CALIDAD? (corrección 2026-11-12, caso Alejandro Maita:
+ * las preguntó las dos y el bot no entendió ninguna). La
+ * garantía que el dueño definió ES esta misma respuesta:
+ * el concreto se lleva de la planta más cercana a la
+ * localización del cliente y se lo ENTREGA JMP — redacción
+ * del dueño (2026-11-12): «entregado por nosotros», NUNCA
+ * presentar la entrega como un despacho de la planta. La
+ * frase se responde tal cual, sin prometer nada más, y el
+ * flujo de cotización sigue con su propia pregunta de
+ * paso, como en la respuesta de construcción. Los
+ * detectores son estrechos (forma de pregunta de origen o
+ * de garantía) y excluyen lo que habla de la orden
+ * existente o describe el proyecto.
+ */
+const RESPUESTA_PLANTA_GARANTIA_ES =
+  'El concreto se lo entregamos nosotros desde la planta más cercana a su localización, así le aseguramos que llegue perfecto.';
+const RESPUESTA_PLANTA_GARANTIA_EN =
+  'We deliver the concrete ourselves from the plant closest to your location, so we make sure it arrives perfect.';
+
+function esPreguntaPlantaOrigen(texto) {
+  const t = ` ${normalizar(texto)} `;
+  if (!t || t.trim().length < 3) return false;
+  // Habla de la orden existente: sigue como corrección o nota.
+  if (
+    detectarReferenciaOrden(texto) ||
+    /\b(mi|la|esa|esta|su) orden\b/.test(t) ||
+    /\bmy order\b/.test(t) ||
+    /\b(cambiar|cambien|cambio de|corregir|corrige|cancelar|cancela|change|correct|cancel)\b/.test(t)
+  ) {
+    return false;
+  }
+  // La pregunta de precio ya tiene su ruta.
+  if (esPreguntaPrecio(texto)) return false;
+  // Describir el proyecto NO es preguntar la planta de
+  // origen: «mi casa es de una planta», «la planta baja»,
+  // «la planta de luz» (el generador).
+  if (/\bplanta baja\b/.test(t) || /\bplanta de luz\b/.test(t) || /\bde una planta\b/.test(t)) {
+    return false;
+  }
+  // ES: forma cerrada de preguntar el origen del concreto.
+  if (
+    /\b(de|desde) (que|ke) planta\b/.test(t) ||
+    /\bcual(es)? (es la |seria la )?planta\b/.test(t) ||
+    /\bque planta\b[^.?!]*\b(traen|trae|tienen|tiene|usan|usa|es|seria|recomiendan|recomienda|surte|surten)\b/.test(t) ||
+    /\bplanta\b[^.?!]*\b(traen|trae|viene|surte|surten|surtan|despachan|sacan)\b/.test(t) ||
+    /\bde donde\b[^.?!]*\b(traen|trae|viene|vienen|sacan|despachan)\b[^.?!]*\b(concreto|cemento)\b/.test(t)
+  ) {
+    return true;
+  }
+  // EN: which/what plant, where does the concrete come from.
+  if (
+    /\b(which|what) plant\b/.test(t) ||
+    /\bwhere does the concrete come from\b/.test(t) ||
+    /\bwhere do you (get|bring) the concrete\b/.test(t)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function esPreguntaGarantia(texto) {
+  const t = ` ${normalizar(texto)} `;
+  if (!t || t.trim().length < 3) return false;
+  // Habla de la orden existente: sigue como corrección o nota.
+  if (
+    detectarReferenciaOrden(texto) ||
+    /\b(mi|la|esa|esta|su) orden\b/.test(t) ||
+    /\bmy order\b/.test(t) ||
+    /\b(cambiar|cambien|cambio de|corregir|corrige|cancelar|cancela|change|correct|cancel)\b/.test(t)
+  ) {
+    return false;
+  }
+  // La pregunta de precio ya tiene su ruta.
+  if (esPreguntaPrecio(texto)) return false;
+  // ES: los verbos de garantizar disparan solos («¿me
+  // garantizan el cemento?», «la calidad la garantizan?»),
+  // también mal escritos con s («garantisado»).
+  if (/\bgaranti[sz]\w*\b/.test(t)) return true;
+  // El sustantivo necesita forma de pregunta, para no robar
+  // notas del flujo («sin garantía está bien» no pregunta
+  // nada): con «?» o con verbo de ofrecimiento.
+  if (
+    /\bgarantia\b/.test(t) &&
+    (/\?/.test(texto) ||
+      /\b(dan|tienen|tiene|ofrecen|ofrece|hay|incluye|viene con|trae)\b/.test(t))
+  ) {
+    return true;
+  }
+  // EN: warranty / guarantee con forma de pregunta.
+  if (
+    /\b(warranty|guarantee\w*)\b/.test(t) &&
+    (/\?/.test(texto) ||
+      /^(do|does|is|can|what)\b/.test(t.trim()) ||
+      /\byou (offer|give|provide)\b/.test(t))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function esPreguntaVendenConcreto(texto) {
   const t = ` ${normalizar(texto)} `;
   if (!t || t.trim().length < 3) return false;
@@ -7142,6 +7297,60 @@ function decidirRespuestaInterna(conversacion, textoCliente, tipoMensaje = 'text
     };
   }
 
+  // La guarda acepta también el intent «saludo» cuando el
+  // mensaje NO es un saludo puro: detectarIntent marca
+  // «saludo» por subcadena («hi» dentro de «which»), y una
+  // pregunta directa en inglés jamás debe caer en la
+  // bienvenida genérica por ese falso positivo.
+  if (
+    (intent.id === 'otro' || (intent.id === 'saludo' && !esSaludoPuro(textoCliente))) &&
+    esPreguntaPlantaOrigen(textoCliente)
+  ) {
+    // ¿DE QUÉ PLANTA SALE EL CONCRETO? SIN FLUJO
+    // (corrección 2026-11-12, caso Alejandro Maita — la
+    // preguntó dos veces y caía en «no le entendí»): se
+    // responde con la frase EXACTA del dueño y se ABRE la
+    // cotización en el paso de las yardas, mismo patrón que
+    // la de construcción; la pregunta de las yardas va tras
+    // la frase para que el flujo siga.
+    conversacion.flow = flujoNuevo('cotizacion', textoCliente);
+    db.setConversationFlow(conversacion.id, conversacion.flow);
+    return {
+      responder: true,
+      texto:
+        (idiomaMsg === 'en' ? RESPUESTA_PLANTA_GARANTIA_EN : RESPUESTA_PLANTA_GARANTIA_ES) +
+        '\n' +
+        preguntaPara('yardas', conversacion.flow.datos, idiomaMsg),
+      intent: 'planta_origen',
+      topic: 'de qué planta sale el concreto',
+    };
+  }
+
+  if (
+    (intent.id === 'otro' || (intent.id === 'saludo' && !esSaludoPuro(textoCliente))) &&
+    esPreguntaGarantia(textoCliente)
+  ) {
+    // ¿GARANTIZAN LA CALIDAD? SIN FLUJO (corrección
+    // 2026-11-12, caso Alejandro Maita — la preguntó dos
+    // veces y caía en «no le entendí»): la garantía que el
+    // dueño definió es la frase de la planta más cercana
+    // entregada por nosotros, sin prometer nada más. Se
+    // responde con la frase EXACTA y se ABRE la cotización
+    // en el paso de las yardas, mismo patrón que la de
+    // construcción.
+    conversacion.flow = flujoNuevo('cotizacion', textoCliente);
+    db.setConversationFlow(conversacion.id, conversacion.flow);
+    return {
+      responder: true,
+      texto:
+        (idiomaMsg === 'en' ? RESPUESTA_PLANTA_GARANTIA_EN : RESPUESTA_PLANTA_GARANTIA_ES) +
+        '\n' +
+        preguntaPara('yardas', conversacion.flow.datos, idiomaMsg),
+      intent: 'garantia',
+      topic: 'la garantía del concreto',
+    };
+  }
+
   if (intent.id === 'otro' && esPreguntaVendenConcreto(textoCliente)) {
     conversacion.flow = flujoNuevo('cotizacion', textoCliente);
     db.setConversationFlow(conversacion.id, conversacion.flow);
@@ -7327,6 +7536,8 @@ module.exports = {
   esPreguntaPrecioPorYarda,
   esPreguntaVendenConcreto,
   esPreguntaConstruccion,
+  esPreguntaPlantaOrigen,
+  esPreguntaGarantia,
   extraerMedidasParciales,
   calcularYardasMedidas,
   esPidePagarDespues,
