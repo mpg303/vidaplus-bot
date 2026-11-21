@@ -1045,6 +1045,59 @@ function extraerNombreCompania(raw) {
 }
 
 /**
+ * Palabras de TRASPASO en el paso de la compañía: piden pasar
+ * con una persona. El intent «humano» no se evalúa en los
+ * pasos de nombre/compañía a propósito, pero estas palabras
+ * tampoco son un nombre de compañía: jamás se anotan como dato.
+ */
+const PALABRAS_TRASPASO = new Set([
+  'especialista', 'humano', 'specialist', 'human', 'persona',
+]);
+
+/**
+ * Rescata el nombre de la compañía de la respuesta SUELTA al
+ * paso de la compañía (falla real del 2026-11-21: el cliente
+ * respondió «Jmp» tres veces y el bot repitió la pregunta para
+ * siempre). La interpretación general clasifica una respuesta
+ * corta sin palabras de giro («Jmp», «ABC») como NOMBRE, y
+ * como el nombre ya estaba anotado, el dato se perdía. Pero en
+ * ESTE paso la compañía es TEXTO LIBRE: lo que el cliente
+ * responda a la pregunta de la compañía ES su compañía.
+ * También rescata el valor dentro de una queja de repetición
+ * («ya le he dicho 3 veces jmp» → «jmp»): el cliente ya dio el
+ * dato — se acepta y se avanza, nunca se repite la pregunta.
+ * Devuelve null cuando manda la interpretación general (texto
+ * con marcadores o en forma de pregunta) o cuando el texto no
+ * es un dato («sin compañía», relleno o palabra de traspaso).
+ */
+function valorCompaniaSuelta(raw) {
+  const t = (raw || '').trim();
+  if (!t) return null;
+  if (esSinCompania(t)) return null;
+  const m = t.match(
+    /^(?:ya\s+(?:te|le)\s+(?:he\s+)?dicho|ya\s+(?:te|le)\s+dije|ya\s+dije|te\s+lo\s+(?:he\s+)?dicho|ya\s+lo\s+dije|i\s+already\s+told\s+you|i\s+told\s+you|i\s+already\s+said|i\s+said)\b[\s:,.\-]*(?:\d+\s*(?:veces|times)\b[\s:,.\-]*)?(.+)$/i
+  );
+  let valor = m ? m[1] : t;
+  if (!m) {
+    if (/\?/.test(t)) return null;
+    if (
+      /a nombre de|mi nombre es|my name is|nombre\s*[:\-]/i.test(t) ||
+      /(?:compa[ñn][ií]a|empresa|negocio|company)\s*(?:es|se llama|is)?\s*[:\-]/i.test(t) ||
+      /(?:compa[ñn][ií]a|empresa|negocio|company)\s+(?:es|se llama|is)\b/i.test(t)
+    ) {
+      return null;
+    }
+  }
+  valor = limpiarNombre(
+    valor.replace(/^[\s:,.\-]+/, '').replace(/^(?:que\s+es|es|que|se\s+llama)\s+/i, '')
+  );
+  if (!valor) return null;
+  if (esSinCompania(valor) || esRespuestaVaga(valor)) return null;
+  if (PALABRAS_TRASPASO.has(normalizar(valor))) return null;
+  return valor;
+}
+
+/**
  * ¿El cliente quiere pagar en EFECTIVO? Incluye las variantes de
  * «pago en el sitio»: «cash», «en efectivo», «pago cuando
  * lleguen», «cash al entregar»… Se registra solo como
@@ -2273,6 +2326,21 @@ function extraerDatos(texto, paso) {
       const cli = extraerNombreCompania(raw);
       if (cli.nombre) d.nombre = cli.nombre;
       if (cli.compania) d.compania = cli.compania;
+      // PASO DE LA COMPAÑÍA (falla real del 2026-11-21): si la
+      // interpretación dejó la respuesta suelta como «nombre»
+      // (palabra corta sin giro: «Jmp»), en ESTE paso esa
+      // respuesta ES la compañía — el nombre ya se preguntó en
+      // el paso anterior. Sin este rescate el dato se perdía
+      // (un nombre ya anotado no se sobrescribe sin corrección
+      // explícita) y el bot repetía la pregunta de la compañía
+      // para siempre, ni avanzaba ni escalaba.
+      if (paso === 'compania' && !d.compania) {
+        const suelta = valorCompaniaSuelta(raw);
+        if (suelta) {
+          d.compania = suelta;
+          if (d.nombre && normalizar(d.nombre) === normalizar(suelta)) delete d.nombre;
+        }
+      }
     }
   } else if (!esPreguntaPrecio(raw) && !preguntaSobreAire(raw)) {
     const adelantado = extraerNombreAdelantado(raw);
@@ -7733,4 +7801,5 @@ module.exports = {
   detectarCiudad,
   esRespuestaVaga,
   esSinCompania,
+  valorCompaniaSuelta,
 };
